@@ -29,7 +29,10 @@ jobs:
       # Nodeを一切使わないため package.json が無い（deploy.yml も version.json を読む）。
       version-file: version.json
       # npm version が使えないため、既存のPythonスクリプトで書き換える。
-      bump-command: python3 scripts/bump_version.py "$NEW_VERSION"
+      # **このスクリプトは上げ幅（patch/minor/major）を受け取る。** バージョン番号そのものを
+      # 渡すと「使い方: ... [patch|minor|major]」で失敗する。version.jsonの更新に加えて
+      # changelog.jsへのスタブ追加とアセットの?v=同期まで行う（npmのversionライフサイクル相当）。
+      bump-command: python3 scripts/bump_version.py "$BUMP_KIND"
     secrets: inherit
     # **呼ばれる側の権限はcallerの付与範囲を超えられない。** issues が write なのは、
     # 呼ばれる側の notify-failure ジョブがリリース対象issueへ失敗を通知するため。
