@@ -1,0 +1,66 @@
+name: Claude Issue Dispatch
+
+# Issueへの`@claude`コメントを起点に、計画提示・実装・develop向けPR作成までをGitHub Actions上で
+# 無人実行するワークフローの、signaly側のトリガー定義。
+#
+# ジョブ本体はguchi-apps/issue-deckのreusable-issue-dispatch.ymlにあり、ここでは`uses:`で参照する
+# だけにしている。技術スタックの差はwith:のinputsで吸収する。
+#
+# `uses:`のタグと`prompts-ref`は必ず同じ値にする。`uses:`だけ上げるとプロンプト
+# (.github/prompts/配下)が古いタグのまま参照され、新しいワークフローで古いプロンプトが動く。
+# なお`prompts-ref`を空にすると呼び出し元(このリポジトリ)の.github/prompts/を読みに行き、
+# signalyはそれを持たないため最初のClaudeステップで落ちる。
+#
+# 動作の詳細(21.plan-requiredの二段階トリガー、mode=ask/plan/split/implement/additionalの
+# 判定、11.localによる二重起動防止など)は、issue-deckのdocs/multi-agent/dispatch.mdを参照する。
+on:
+  issues:
+    types: [unlabeled]
+  issue_comment:
+    types: [created]
+  # 計画/実装のフォールバック検証ステップ専用の自己リトライ起動経路。
+  # issue_number/retry_attemptはgh workflow runから渡される想定だが、人間が直接手動実行してもよい。
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "対象issue番号"
+        required: true
+        type: string
+      retry_attempt:
+        description: "これまでの自動リトライ回数(0始まり。指定した回数の次の試行として実行する)"
+        required: false
+        type: string
+        default: "0"
+
+jobs:
+  dispatch:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-dispatch.yml@workflows/v10
+    with:
+      # signalyにはNodeが一切無い（package.jsonがルートにもfrontend/にも無く、
+      # frontend/は素のHTML/JS、scripts/は全てPythonかbash）。準備ステップで
+      # インストールするものが何も無いため minimal。
+      runtime-setup: minimal
+      # **npm も pnpm も使わないが、既定値の npm のままにする。** この値は実装ステップの
+      # 許可ツールの出し分け（issue-deck#1147）にも使われ、pnpm にすると node が
+      # 許可されなくなる。Nodeは無いが、将来frontend/にツールを入れたときに
+      # 許可されていない状態から始まるのを避ける。
+      package-manager: npm
+      #
+      # **node-version は指定しない。** Nodeが無いリポジトリでバージョンを固定しても
+      # 意味が無い（他の7リポジトリでは全て指定している）。
+      #
+      # **Pythonのバージョンも指定できない。** CIはsetup-pythonで3.11に固定しているが、
+      # 共有ワークフローにPythonのプリセットは無く、実装ステップはランナー標準の
+      # Pythonを使う（許可ツールとしてpython・pip・pytestは通る）。
+      # このリポジトリは検証手段がPythonのテストしか無いため、workflows/v10未満の
+      # タグへ下げると検証が一切できなくなる。
+      # uses: のタグと必ず同じ値にする。
+      prompts-ref: workflows/v10
+    # CLAUDE_CODE_OAUTH_TOKEN・WORKFLOW_PATを呼ばれる側へ渡す。
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write

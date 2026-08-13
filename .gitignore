@@ -22,3 +22,7 @@ __pycache__/
 # エディタ
 .DS_Store
 *.swp
+
+# claude-issue-dispatch.yml が無人実行のたびにcheckoutする（リポジトリ管理外）
+/.shared-context/
+/.shared-prompts/
