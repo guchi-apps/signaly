@@ -1,0 +1,44 @@
+name: Release develop to main
+
+# develop→mainのリリース（バージョンbump PR・develop→mainのPR作成）を行う。
+# **本体は guchi-apps/issue-deck にあり、ここはトリガー定義だけの薄いcaller**
+# （guchi-apps/issue-deck#1181）。
+#
+# バンプPRはCI通過後にdevelopへ自動マージする。バンプPRがdevelopへマージされてバージョンが
+# 変わると、push(develop, paths)で本ワークフローが再度起動し、develop→mainのPRを自動作成する。
+# **develop→mainの実際のマージは自動マージ不可カテゴリに該当するため人間が手動で行う。**
+#
+# バンプPRの作成は人間の確認なしに走るため、scheduleでの自動起動はしない。
+on:
+  workflow_dispatch: {}
+  # バンプPRがdevelopへマージされバージョンが変わったときに再起動して、develop→mainのPRを
+  # 自動作成する。通常のフィーチャーpushでは変わらないため起動しない。
+  push:
+    branches: [develop]
+    paths:
+      - version.json
+
+concurrency:
+  group: release-develop-to-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-release-develop-to-main.yml@workflows/v13
+    with:
+      # Nodeを一切使わないため package.json が無い（deploy.yml も version.json を読む）。
+      version-file: version.json
+      # npm version が使えないため、既存のPythonスクリプトで書き換える。
+      # **このスクリプトは上げ幅（patch/minor/major）を受け取る。** バージョン番号そのものを
+      # 渡すと「使い方: ... [patch|minor|major]」で失敗する。version.jsonの更新に加えて
+      # changelog.jsへのスタブ追加とアセットの?v=同期まで行う（npmのversionライフサイクル相当）。
+      bump-command: python3 scripts/bump_version.py "$BUMP_KIND"
+    secrets: inherit
+    # **呼ばれる側の権限はcallerの付与範囲を超えられない。** issues が write なのは、
+    # 呼ばれる側の notify-failure ジョブがリリース対象issueへ失敗を通知するため。
+    # read にすると startup_failure になり、ジョブが1つも作られずログも残らない。
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write

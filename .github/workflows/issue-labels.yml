@@ -1,0 +1,53 @@
+name: Issue Progress
+
+# Issueの進捗(Ready -> Planning -> Implementation -> Develop PR -> Develop -> Release -> Done)の
+# 状態遷移をイベント駆動で保証するワークフローの、signaly側のトリガー定義。
+#
+# ジョブ本体はguchi-apps/issue-deckのreusable-issue-labels.ymlにあり、ここでは`uses:`で参照する
+# だけにしている。呼ばれる側でも`github`コンテキストは呼び出し元(このリポジトリ)のものになる
+# ため、ジョブ定義側にsignaly固有の書き換えは不要。
+#
+# **進捗はGitHub ProjectsのStatusが唯一の正**で、進捗ラベル(01.planning〜09.main)は
+# guchi-apps/issue-deck#1010(Phase 5)で廃止された。このワークフローが行うのはissue-deckの
+# 進捗報告API(POST /api/progress)への報告で、ラベル操作は`00.check-user`の除去だけが残る。
+# ファイル名に`labels`が残っているのは、issue-deck側の実体ファイル名に合わせているため。
+#
+# 参照はタグ固定にする。issue-deck側は`./`のローカルパス参照で常に最新を動かすカナリアであり、
+# 他アプリはタグを上げるPRを出すまで影響を受けない構成になっている。タグを上げる際は
+# claude-issue-dispatch.ymlの`uses:`・`prompts-ref`もあわせて確認する。
+#
+# 対象issueの番号はブランチ名 issue-<番号> から特定するため、この命名規約に従わない
+# ブランチ・PRは全て対象外になる。
+on:
+  push:
+    branches:
+      - "issue-*"
+  pull_request:
+    types: [opened, synchronize, closed]
+    branches:
+      - develop
+      - main
+  issues:
+    types: [closed]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  labels:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-labels.yml@workflows/v12
+    # 呼ばれる側の権限はcallerの付与範囲を超えられない。cleanup-on-closeジョブが
+    # contents: write を要求するため、あわせてここで付与する。
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: write
+    # 進捗をissue-deckの報告API(POST /api/progress)へ送るための共有シークレット
+    # (guchi-apps/issue-deck#991)。organization secretとして解決される。
+    # secrets: inherit ではなく個別に渡し、呼ばれる側へ渡る秘密を最小限に保つ。
+    #
+    # **Phase 5以降、これとorg変数APP_BASE_URLは必須。** 進捗ラベルという代替の
+    # 判断材料が無くなったため、未設定だと進捗が一切記録されず、develop->mainの
+    # 一括遷移も対象を1件も見つけられない。
+    secrets:
+      PROGRESS_REPORT_SECRET: ${{ secrets.PROGRESS_REPORT_SECRET }}
