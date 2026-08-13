@@ -34,7 +34,7 @@ on:
 
 jobs:
   dispatch:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-dispatch.yml@workflows/v11
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-dispatch.yml@workflows/v12
     with:
       # signalyにはNodeが一切無い（package.jsonがルートにもfrontend/にも無く、
       # frontend/は素のHTML/JS、scripts/は全てPythonかbash）。準備ステップで
@@ -55,7 +55,7 @@ jobs:
       # このリポジトリは検証手段がPythonのテストしか無いため、workflows/v10未満の
       # タグへ下げると検証が一切できなくなる。
       # uses: のタグと必ず同じ値にする。
-      prompts-ref: workflows/v11
+      prompts-ref: workflows/v12
     # CLAUDE_CODE_OAUTH_TOKEN・WORKFLOW_PATを呼ばれる側へ渡す。
     secrets: inherit
     permissions:
