@@ -54,16 +54,37 @@ jobs:
     runs-on: ubuntu-latest
     needs: tag
 
+    # GitHub側の値をここで明示的に渡す。以前は実行のたびに1Passwordから読んで
+    # いたが、サービスアカウントの日次レート制限を使い切ってフリート全体の
+    # デプロイが止まった（guchi-apps/issue-deck#1302）。SERVER_*・SHARED_DB_*・
+    # SUPABASE_* はorganizationの共通値。
+    #
+    # このブロックは scripts/generate-workflow-env-block.sh で生成する（guchi-apps/issue-deck#1307）。
+    env:
+      DB_HOST: ${{ secrets.SHARED_DB_HOST }}
+      DB_PASSWORD: ${{ secrets.SHARED_DB_PASSWORD }}
+      DB_PORT: ${{ secrets.SHARED_DB_PORT }}
+      DB_USER: ${{ secrets.SHARED_DB_USER }}
+      HOST: ${{ secrets.SERVER_HOST }}
+      SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+      USERNAME: ${{ secrets.SERVER_USERNAME }}
+      ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
+      APP_URL: ${{ secrets.APP_URL }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
+      LOGIN_WEBHOOK_URL: ${{ secrets.LOGIN_WEBHOOK_URL }}
+      SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
+      TARGET_DIR: ${{ secrets.TARGET_DIR }}
+      VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+      VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+      VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: 1Password からシークレットを読み込む
-        uses: 1password/load-secrets-action@v4
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          OP_ENV_FILE: .github/deploy.env.tpl
 
       - name: SSH キーをセットアップ
         uses: shimataro/ssh-key-action@v2
@@ -201,6 +222,15 @@ jobs:
     needs: [tag, deploy]
     if: always()
 
+    # GitHub側の値をここで明示的に渡す。以前は実行のたびに1Passwordから読んで
+    # いたが、サービスアカウントの日次レート制限を使い切ってフリート全体の
+    # デプロイが止まった（guchi-apps/issue-deck#1302）。SERVER_*・SHARED_DB_*・
+    # SUPABASE_* はorganizationの共通値。
+    #
+    # このブロックは scripts/generate-workflow-env-block.sh で生成する（guchi-apps/issue-deck#1307）。
+    env:
+      SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -218,15 +248,10 @@ jobs:
           fi
           echo "result=$result" >> "$GITHUB_OUTPUT"
 
-      - name: 1Password からシークレットを読み込む
-        uses: 1password/load-secrets-action@v4
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          OP_ENV_FILE: .github/deploy.env.tpl
-
       - name: Signaly に通知
+        # 通知はCIやデプロイの合否そのものではない。ここが失敗してもrun全体を
+        # 落とさない（guchi-apps/issue-deck#1302）。
+        continue-on-error: true
         env:
           SIGNALY_WEBHOOK_URL: ${{ env.SIGNALY_WEBHOOK_URL }}
           NOTIFY_APP:    Signaly
@@ -240,18 +265,22 @@ jobs:
     needs: [tag, deploy, release]
     if: always() && needs.release.result != 'skipped'
 
+    # GitHub側の値をここで明示的に渡す。以前は実行のたびに1Passwordから読んで
+    # いたが、サービスアカウントの日次レート制限を使い切ってフリート全体の
+    # デプロイが止まった（guchi-apps/issue-deck#1302）。SERVER_*・SHARED_DB_*・
+    # SUPABASE_* はorganizationの共通値。
+    #
+    # このブロックは scripts/generate-workflow-env-block.sh で生成する（guchi-apps/issue-deck#1307）。
+    env:
+      SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: 1Password からシークレットを読み込む
-        uses: 1password/load-secrets-action@v4
-        with:
-          export-env: true
-        env:
-          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-          OP_ENV_FILE: .github/deploy.env.tpl
-
       - name: Signaly に通知
+        # 通知はCIやデプロイの合否そのものではない。ここが失敗してもrun全体を
+        # 落とさない（guchi-apps/issue-deck#1302）。
+        continue-on-error: true
         env:
           SIGNALY_WEBHOOK_URL: ${{ env.SIGNALY_WEBHOOK_URL }}
           NOTIFY_APP:      Signaly

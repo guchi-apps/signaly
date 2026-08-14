@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat /tmp/signaly-uvicorn.log)",
+      "Read(//tmp/**)",
+      "Bash(tail -5 /tmp/signaly-cloudflared.log)",
+      "Bash(curl -sf http://127.0.0.1:8001/)",
+      "Bash(lsof -t -i:8001)",
+      "Bash(git -C /home/guchi/apps/signaly status --short)",
+      "Bash(git -C /home/guchi/apps status --short)",
+      "Bash(git -C /home/guchi/apps/_docs status --short)",
+      "Bash(git -C /home/guchi/apps/signaly log --oneline -3)",
+      "Bash(git -C /home/guchi/apps/signaly diff --stat HEAD)"
+    ]
+  }
+}
