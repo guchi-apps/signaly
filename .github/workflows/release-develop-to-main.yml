@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   release:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-release-develop-to-main.yml@workflows/v18
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-release-develop-to-main.yml@workflows/v19
     with:
       # Nodeを一切使わないため package.json が無い（deploy.yml も version.json を読む）。
       version-file: version.json
