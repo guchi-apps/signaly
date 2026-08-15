@@ -28,14 +28,14 @@ on:
       - develop
       - main
   issues:
-    types: [closed]
+    types: [opened, edited, closed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch: {}
 
 jobs:
   labels:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-labels.yml@workflows/v15
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-labels.yml@workflows/v18
     # 呼ばれる側の権限はcallerの付与範囲を超えられない。cleanup-on-closeジョブが
     # contents: write を要求するため、あわせてここで付与する。
     permissions:
