@@ -28,7 +28,7 @@ on:
       - develop
       - main
   issues:
-    types: [closed]
+    types: [opened, edited, closed]
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch: {}
