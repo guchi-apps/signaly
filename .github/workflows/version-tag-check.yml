@@ -1,0 +1,30 @@
+name: Version tag check
+
+# バージョンを上げ忘れたままdevelop→mainをマージすると、mainへ入った後に deploy.yml の
+# タグ作成が失敗して本番デプロイが止まる。それをmain宛PRのCIで先に落とす（issue-deck#1367）。
+# **本体は issue-deck の reusable-version-tag-check.yml にあり、ここはトリガー定義だけの
+# 薄いcaller**。
+#
+# **トリガーをdevelopへ広げないこと。** featureブランチのバージョンは直前のリリースのままで、
+# 対応するタグが必ず存在するため、developへの全PRが赤くなる。
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: version-tag-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-tag-check:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-version-tag-check.yml@workflows/v16
+    # deploy.yml がバージョンを読むファイルに合わせる（ルートの package.json では無いため）。
+    # version-query（.version）とタグ接頭辞（v）は既定値でよい。
+    with:
+      version-file: version.json
+
+    # **呼ばれる側の権限はcallerの付与範囲を超えられない**（issue-deck#1181）。タグの確認しか
+    # しないため contents: read だけを渡す。
+    permissions:
+      contents: read
