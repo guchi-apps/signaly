@@ -32,6 +32,22 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 **Lint は無い。** CI（`.github/workflows/ci.yml`）も `backend` ジョブだけで、
 実行しているのは上記の unittest のみ。
 
+### エンドポイントは MySQL 無しで検証できる
+
+`backend/main.py` を import しても **DB へは接続しない**（`create_engine` は遅延接続で、
+`init_db()` は lifespan の中でしか呼ばれない）。そのため FastAPI の `TestClient` で
+エンドポイントを直接叩ける。DB に触る3つの関数だけ差し替えればよい。
+
+```python
+patch.object(main, "_fetch_channels", lambda: {"<channel_id>": "<channel_name>"})
+patch.object(main, "_save_notification", saved.append)
+patch.object(main, "send_push_notifications", lambda entry: None)
+```
+
+実例は `backend/test_app_login_endpoint.py`。**ローカルの MySQL は root が auth_socket
+認証のため sudo 無しでは繋がらず、`uvicorn` を起動しても `init_db()` で落ちる。**
+エンドポイントの動作確認は上記の方式を使うこと。
+
 ### バージョン管理
 
 **`package.json` ではなく `version.json`**（`{"version": "1.5.8"}`）。

@@ -23,6 +23,9 @@ Webhook URL は Signaly にログイン後、**Webhook URL** 画面でチャン�
 https://<your-host>/webhook/<channel_id>
 ```
 
+> ペイロードの形を自分で決められない送信元（Supabase の Database Webhooks など）向けには、
+> 専用の受け口があります。→ [アプリのログイン通知（Supabase Database Webhooks）](#アプリのログイン通知supabase-database-webhooks)
+
 **内部データモデルについて:** 受信したペイロードは形式によらず、最終的に `title` / `message` / `level` / `color` / `fields` の5項目に正規化されて保存・配信されます。Discord 形式の `content` はそのままの形では保持されず、後述のルールで `title` / `message` に変換されます。
 
 ---
@@ -374,3 +377,167 @@ Content-Type: application/json
   }]
 }
 ```
+
+---
+
+## アプリのログイン通知（Supabase Database Webhooks）
+
+Google ログインを **Supabase Auth** に統一したアプリ（ops-dashboard など）向けの受け口です。
+
+これらのアプリは OAuth のコールバックを Supabase がホストするため、アプリのバックエンドに
+ログイン通知のコードを差し込む場所がありません。代わりに **Supabase の Database Webhooks**
+（`auth.users` などの変更をトリガーに HTTP POST する機能）を Signaly へ向けます。
+**アプリ側のコードは一切変更しません。**
+
+Database Webhooks が送るペイロードは形式が固定で変更できないため、`/webhook/{channel_id}`
+（Discord 形式）では受けられません。このエンドポイントが Supabase の生ペイロードを
+通知フォーマットへ変換します。
+
+### 概要
+
+| 項目 | 内容 |
+|------|------|
+| メソッド | `POST` |
+| エンドポイント | `/notify/app-login/{app_id}` |
+| Content-Type | `application/json` |
+| 認証 | **必要**（宛先チャンネルの `channel_id` をトークンとしてヘッダーで送る） |
+
+```
+POST https://<your-host>/notify/app-login/ops-dashboard
+X-Signaly-Token: <channel_id>
+Content-Type: application/json
+```
+
+- `{app_id}` は**通知タイトルに出る表示名**です（例: `🔐 ops-dashboard ログイン`）。
+  使える文字は `A-Z a-z 0-9 . _ -` の 1〜64 文字で、外れると `400` になります。
+  宛先の決定には使われません（宛先はトークンだけで決まります）。
+- **宛先チャンネルはトークンで決まります。** Signaly の **Webhook URL** 画面に出ている
+  `https://<your-host>/webhook/<channel_id>` の `<channel_id>` 部分をそのまま使ってください。
+- アプリを増やすときは Signaly でチャンネルを作り、そのチャンネルIDを Supabase 側の
+  ヘッダーに貼るだけです。Signaly の設定変更・再デプロイは不要です。
+
+### トークンの渡し方
+
+次の順で見ます。上にあるものが優先されます。
+
+| # | 渡し方 | 備考 |
+|---|--------|------|
+| 1 | `X-Signaly-Token: <channel_id>` | **推奨** |
+| 2 | `Authorization: Bearer <channel_id>` | 送信元の UI が `Authorization` しか設定できない場合 |
+| 3 | `?token=<channel_id>`（クエリ文字列） | **ヘッダーがどうしても付けられない場合の保険。** URL は Web サーバーのアクセスログに残るため、使えるならヘッダーにしてください |
+
+トークンが無い、または既存のチャンネルIDに一致しない場合は `401` を返し、通知は作られません。
+
+### 受け付けるペイロード
+
+Supabase の Database Webhooks が送る形をそのまま受け取ります。
+
+```json
+{
+  "type": "UPDATE",
+  "table": "users",
+  "schema": "auth",
+  "record": { "...変更後の行..." },
+  "old_record": { "...変更前の行..." }
+}
+```
+
+| 条件 | 動作 |
+|---|---|
+| `auth.sessions` の `INSERT` | ログイン通知（🔐） |
+| `auth.users` の `INSERT` | 新規ユーザー登録の通知（🎉） |
+| `auth.users` の `UPDATE` で `last_sign_in_at` が変化した | ログイン通知（🔐） |
+| `auth.users` の `UPDATE` で `last_sign_in_at` が変わらない | **通知しない**（`200` + `{"skipped":"no_sign_in"}`） |
+| `type` が `DELETE` | **通知しない**（`200` + `{"skipped":"delete"}`） |
+| 上記以外のテーブル | 汎用のイベント通知（🔔）として配信。本文に `schema.table / type` が入る |
+
+`auth.users` の `UPDATE` はログイン以外（メールアドレス変更・メタデータ更新など）でも飛ぶため、
+`last_sign_in_at` が動いたときだけログインとして扱っています。
+
+通知しないケースでも **`200` を返します**（Supabase 側のリトライとエラーログを増やさないため）。
+
+### どのテーブルを起点にするか
+
+| 起点 | 取れる情報 | 取れない情報 |
+|---|---|---|
+| `auth.users`（`UPDATE`） | メール・ユーザー名・プロバイダ・メール確認済 | 接続元IP・User-Agent |
+| `auth.sessions`（`INSERT`） | 接続元IP・User-Agent・ユーザーID | メール・ユーザー名 |
+
+両方受け付けるので、両方設定すれば1回のログインで2通届きます。**通常は `auth.users` の
+`UPDATE` だけで十分**です（誰がログインしたかが分かるため）。接続元IPも知りたい場合に
+`auth.sessions` を足してください。
+
+### 通知に出る項目
+
+受け取った行データのうち、**次の項目だけ**を通知に載せます。
+
+| 表示名 | 取得元 |
+|---|---|
+| ユーザー | `raw_user_meta_data` の `full_name` → `name` → `user_name` |
+| メール | `email` |
+| プロバイダ | `raw_app_meta_data.provider` |
+| 接続元IP | `ip` |
+| メール確認済 | `email_confirmed_at` / `confirmed_at` の有無 |
+| ユーザーID | `user_id` / `id`（メールもユーザー名も取れなかった場合のみ） |
+| 日時 | `last_sign_in_at` → `created_at` → 受信時刻 |
+| User-Agent | `user_agent` |
+
+**`auth.users` の行にはパスワードハッシュ（`encrypted_password`）や各種トークン
+（`confirmation_token` / `recovery_token` / `email_change_token_*` /
+`reauthentication_token`）が含まれます。** 上の表に無い項目は通知にも通知履歴にも
+一切出しません。各値は 500 文字で切り詰めます。
+
+### Supabase 側の設定
+
+Supabase プロジェクトのダッシュボードで **Database → Webhooks → Create a new hook** から作ります。
+
+| 設定項目 | 値 |
+|---|---|
+| Table | `auth` スキーマの `users`（または `sessions`） |
+| Events | `Update`（`sessions` を使う場合は `Insert`） |
+| Type | HTTP Request |
+| Method | `POST` |
+| URL | `https://<your-host>/notify/app-login/<app_id>` |
+| HTTP Headers | `X-Signaly-Token: <channel_id>` を追加 |
+
+ダッシュボードの Webhooks 画面に `auth` スキーマが出てこない場合は、SQL Editor から
+`supabase_functions.http_request` を呼ぶトリガーを直接作ります。
+
+### 動作確認
+
+```bash
+curl -i -X POST "https://<your-host>/notify/app-login/ops-dashboard" \
+  -H "X-Signaly-Token: <channel_id>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "UPDATE",
+    "table": "users",
+    "schema": "auth",
+    "record": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "email": "you@example.com",
+      "last_sign_in_at": "2026-08-17T10:00:00Z",
+      "email_confirmed_at": "2026-01-01T00:00:00Z",
+      "raw_user_meta_data": {"full_name": "Your Name"},
+      "raw_app_meta_data": {"provider": "google"}
+    },
+    "old_record": {"last_sign_in_at": "2026-08-16T10:00:00Z"}
+  }'
+```
+
+### レスポンス
+
+| HTTP ステータス | 条件 |
+|----------------|------|
+| `200 OK` | 通知を作成した（`{"ok":true,"id":"..."}`）／条件に合わず通知しなかった（`{"ok":true,"skipped":"..."}`） |
+| `400 Bad Request` | `app_id` が不正、またはボディが JSON オブジェクトでない |
+| `401 Unauthorized` | トークンが無い、または存在しないチャンネルID |
+
+### 制限・注意事項
+
+- チャンネルIDは**宛先の識別子であると同時に資格情報**です。`/webhook/{channel_id}` と同じ扱いで、
+  漏洩するとそのチャンネルへ偽の通知を投げられます（影響範囲はそのチャンネルに閉じます）。
+- `{app_id}` は表示名でしかなく、検証されません。同じチャンネルIDを持っていれば任意の名前で
+  通知を投げられます（上記のとおり `/webhook/{channel_id}` でできることと同等です）。
+- Supabase の Database Webhooks は `pg_net` を使う非同期送信のため、**Signaly が落ちていた場合の
+  ログインは通知されません**（リトライされません）。監査ログの代わりにはなりません。
