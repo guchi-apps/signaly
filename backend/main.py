@@ -20,6 +20,7 @@ from pydantic import BaseModel, field_validator
 from itsdangerous import BadData
 from sqlalchemy import and_, or_
 
+import app_login
 import auth
 from database import ApiKey, Channel, ChannelGroup, Notification, PushSubscription, get_session, init_db
 from login_notify import build_login_notification, send_login_notification
@@ -716,6 +717,44 @@ async def receive_webhook(channel_id: str, request: Request):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     channel_name = channels[channel_id]
+    entry = await _dispatch_notification(channel_name, parsed)
+    return {"ok": True, "id": entry["id"]}
+
+
+# ── アプリのログイン通知（Supabase Database Webhooks 用）──────────────────────
+# Supabase Auth へ移行したアプリは OAuth コールバックを自分のバックエンドで処理しないため、
+# アプリ側のコードにログイン通知を差し込めない。Supabase 側の Database Webhooks を
+# ここへ向けることで、アプリのコードを一切変更せずに通知を集約する。
+#
+# 宛先と認証はどちらもチャンネルID（token_urlsafe(16)）で行う。/webhook/{channel_id} が
+# 既に「チャンネルIDが宛先の識別子であり事実上の資格情報」というモデルなので、
+# 新しいシークレットを増やさずそれに揃える。URL パスの {app_id} は表示名にのみ使う。
+
+@app.post("/notify/app-login/{app_id}")
+async def receive_app_login(app_id: str, request: Request, token: Optional[str] = None):
+    if not app_login.valid_app_id(app_id):
+        raise HTTPException(status_code=400, detail="app_id が不正です")
+
+    presented = app_login.extract_token(request.headers, token)
+    if not presented:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    channels = await asyncio.to_thread(_fetch_channels)
+    channel_name = channels.get(presented)
+    if not channel_name:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    raw = await _read_webhook_body(request)
+    try:
+        parsed = app_login.parse_app_login_payload(app_id, raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if parsed is None:
+        # ログインではないイベント（DELETE・last_sign_in_at が動かない UPDATE）。
+        # Supabase 側のリトライ・エラーログを増やさないよう 200 で返す。
+        return {"ok": True, "skipped": app_login.skip_reason(raw)}
+
     entry = await _dispatch_notification(channel_name, parsed)
     return {"ok": True, "id": entry["id"]}
 

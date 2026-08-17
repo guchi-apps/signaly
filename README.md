@@ -27,6 +27,7 @@ signaly/
 │   ├── auth.py
 │   ├── push.py
 │   ├── webhook.py
+│   ├── app_login.py      # Supabase Database Webhooks → ログイン通知の変換
 │   └── requirements.txt
 ├── frontend/             # 静的 UI（PWA）
 │   ├── app.js
@@ -133,6 +134,13 @@ POST https://<your-host>/webhook/<channel_id>
 ```
 
 Webhook URL はログイン後の **Webhook URL** 画面で確認できます。
+
+Supabase Auth へ移行したアプリのログイン通知は、Supabase の Database Webhooks を直接受ける専用の受け口を使います（アプリ側のコード変更は不要）。詳細は [docs/webhook.md](./docs/webhook.md#アプリのログイン通知supabase-database-webhooks) を参照してください。
+
+```
+POST https://<your-host>/notify/app-login/<app_id>
+X-Signaly-Token: <channel_id>
+```
 
 ## デプロイ
 

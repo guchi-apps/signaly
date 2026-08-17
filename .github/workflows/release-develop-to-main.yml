@@ -10,7 +10,17 @@ name: Release develop to main
 #
 # バンプPRの作成は人間の確認なしに走るため、scheduleでの自動起動はしない。
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      bump_kind:
+        # バージョンの上げ幅を人が決められるようにするための入口
+        # （guchi-apps/issue-deck#1548）。issue-deckの画面のリリース起動ダイアログから渡る。
+        # 既定の`auto`はコード差分からの自動判定。
+        description: "バージョンの上げ幅（autoならコード差分から自動判定）"
+        required: false
+        type: choice
+        default: auto
+        options: [auto, patch, minor, major]
   # バンプPRがdevelopへマージされバージョンが変わったときに再起動して、develop→mainのPRを
   # 自動作成する。通常のフィーチャーpushでは変わらないため起動しない。
   push:
@@ -24,8 +34,11 @@ concurrency:
 
 jobs:
   release:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-release-develop-to-main.yml@workflows/v18
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-release-develop-to-main.yml@workflows/v21
     with:
+      # pushトリガー（バンプPRのマージ）で起動したときは`inputs`自体が無いため空文字を渡す。
+      # そちらの実行はdevelop→mainのPR作成だけを行い、上げ幅を使わない。
+      bump-kind: ${{ github.event_name == 'workflow_dispatch' && inputs.bump_kind || '' }}
       # Nodeを一切使わないため package.json が無い（deploy.yml も version.json を読む）。
       version-file: version.json
       # npm version が使えないため、既存のPythonスクリプトで書き換える。
