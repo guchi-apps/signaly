@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   version-tag-check:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-version-tag-check.yml@workflows/v20
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-version-tag-check.yml@workflows/v21
     # deploy.yml がバージョンを読むファイルに合わせる（ルートの package.json では無いため）。
     # version-query（.version）とタグ接頭辞（v）は既定値でよい。
     with:
