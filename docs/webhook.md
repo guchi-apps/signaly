@@ -316,7 +316,8 @@ Discord は `204 No Content` を返しますが、Signaly は通知 ID を返し
 - `content` と `embeds[].description` は本文（`message`）として結合表示（結合順は上記の変換ルール参照）
 - `embeds[].fields` と `author` / `footer` / `thumbnail` / `image` は同じ見た目の `fields` として一覧表示（特別なレイアウトの違いはない）
 - 本文とフィールドは**両方とも表示**されます
-- フィールドの `value` では `` `code` `` と `[link](url)` が使えます（`thumbnail` / `image` の URL 文字列自体はこの記法を通らないため、リンクにはなりません）
+- フィールドの `value` では `` `code` ``・`[link](url)`・`**強調**` / `__強調__`・`*斜体*` / `_斜体_` が使えます（`thumbnail` / `image` の URL 文字列自体はこの記法を通らないため、リンクにはなりません）。タイトル・本文も同じ記法に対応します
+- リンクの URL に `_` や `*` が含まれていても壊れません（`https://example.com/session_01ABC` のような URL をそのまま書けます）。`` `code` `` の中身も強調変換されず、書いたとおりに表示されます
 
 ---
 
