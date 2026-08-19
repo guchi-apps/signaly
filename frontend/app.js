@@ -565,19 +565,34 @@ async function updateAppBadge(total = totalUnread()) {
 
 // ── Notification card ────────────────────────────────────────────────────────
 
+// 強調変換に巻き込まれないよう、生成済みHTMLを一時退避するときの目印（#131）
+const STASH_MARK = /@@SIGNALY-STASH-(\d+)@@/g
+
 function renderFieldValue(raw) {
+  // 生成済みHTML（<code>・<a>の開始タグ）に含まれる `_` や `*` が後続の強調変換に
+  // 巻き込まれないよう、いったんプレースホルダへ退避してから最後に戻す。
+  // 強調変換の対象を「エスケープ済みの本文」だけに限定するのが目的（#131）。
+  const stashed = []
+  const stash = (html) => `@@SIGNALY-STASH-${stashed.push(html) - 1}@@`
+
   const escaped = String(raw)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    .replace(STASH_MARK, '') // 入力に目印と同じ文字列があっても混同しないよう除去する
   return escaped
-    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+    .replace(/`([^`\n]+)`/g, (_m, code) => stash(`<code>${code}</code>`))
+    .replace(
+      /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+      (_m, label, url) =>
+        `${stash(`<a href="${url.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">`)}${label}</a>`
+    )
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_\n]+)__/g, '<strong>$1</strong>')
     .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
     .replace(/(?<!_)_([^_\n]+)_(?!_)/g, '<em>$1</em>')
     .replace(/:rocket:/g, '🚀')
+    .replace(STASH_MARK, (_m, i) => stashed[Number(i)])
 }
 
 const NOTIF_DELETE_ICON = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
