@@ -57,12 +57,13 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 
 `@claude` コメントを起点に、計画提示〜実装〜develop向けPR作成までを GitHub Actions 上で無人実行する。
 ワークフローの実体は `guchi-apps/issue-deck` にあり、このリポジトリの `.github/workflows/` には
-`uses:` で参照する薄い caller だけを置いている（`@workflows/v10`）。
+`uses:` で参照する薄い caller だけを置いている。**参照タグは全 caller で揃える**（現在は `@workflows/v23`）。
 
 | ファイル | 役割 |
 |---|---|
 | `claude-issue-dispatch.yml` | `@claude` 起点の無人実行（計画提示・実装・PR作成・質問応答） |
 | `issue-labels.yml` | Issueの進捗（Project Status）の状態遷移 |
+| `claude-conflict-resolve.yml` | develop向けPRが`develop`とコンフリクトした際の自動解消 |
 
 ### 無人実行で使える環境
 
