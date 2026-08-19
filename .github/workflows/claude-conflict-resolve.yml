@@ -1,0 +1,104 @@
+name: Claude Conflict Resolve
+
+# develop向けPRがdevelopとの間でコンフリクトした際、Claude Codeが解消を試みるワークフローの、
+# signaly側のトリガー定義。これが無いと、コンフリクトのたびに人がIssueへ
+# `@claude コンフリクトを解消して`とコメントする必要がある（guchi-apps/issue-deck#315）。
+#
+# ジョブ本体（detect-conflicts / resolve-conflicts）は持たず、issue-deckの再利用可能
+# ワークフローを`uses:`で参照するだけにしている（issue-deck#1066・#1090）。技術スタックの差は
+# with:のinputsで吸収する。
+#
+# 参照はタグ固定にする。@developを参照するとissue-deck側の不具合が即座に波及するため。
+# `uses:`のタグと`prompts-ref`は必ず同じ値にし、このリポジトリの他のcaller
+# （claude-issue-dispatch.yml等）とも揃える。`prompts-ref`を空にすると呼び出し元＝signalyの
+# .github/prompts/を読みに行き、signalyはそれを持たないためClaudeステップで落ちる。
+#
+# トリガー(`on:`)はジョブ本体と違って各リポジトリのcallerが持つコピーなので、issue-deck側で
+# 直しても波及しない。issue-deck側のトリガーを変えたときはこのファイルも合わせて直す
+# （issue-deck#1366）。
+#
+# トリガー:
+# - workflow_run(CI / requested / develop): developへ新たな変更が入るとOPENなPRが
+#   コンフリクトしうるため、その都度検知する（最も速報性が高い経路）。
+#   本来はpush(develop)で直接受けたいが、claude-code-actionはpushイベントに対応して
+#   おらず`Unsupported event type: push`で必ず失敗する（issue-deck#1330。対応するのは
+#   issues / issue_comment / pull_request / pull_request_target / pull_request_review /
+#   pull_request_review_comment / workflow_dispatch / repository_dispatch / schedule /
+#   workflow_runの10種類のみ）。signalyのci.ymlがpush(develop)で走るため、その`requested`
+#   （=CI実行がキューされた時点）を代理のpush通知として使う。completedではなくrequestedに
+#   するのは、CIの完走を待つ分だけ検知が遅れるのを避けるためで、コンフリクト検知自体は
+#   CIの成否と無関係なため待つ必要がない。
+#   なお workflow_run は「デフォルトブランチ上のワークフローファイル」でのみ発火する。
+#   signalyのデフォルトブランチはdevelopなので、developへマージした時点で有効になる。
+#   仮に発火しなくても後述のschedule（15分おき）が拾うため、取りこぼしても検知は止まらない。
+# - pull_request(develop向け、opened/reopened): develop向けPRが作成された時点で
+#   既にdevelopとコンフリクトしているケースを即座に拾うため。synchronize（PRへの追加push毎）は
+#   含めない。実装エージェントが細かくpushする間、毎回matrixジョブが走ると実装ステップ自身と
+#   同じconcurrencyグループで噛み合いキューが詰まるため（issue-deck#814）。
+# - schedule(15分おき): 上2つの直後はGitHubのmergeable判定が終わっておらずUNKNOWNのままの
+#   場合があるため、取りこぼしを拾い直す安全網。
+# - workflow_dispatch: 手動実行用。issue_numberを指定するとそのIssueのdevelop向けPR1件だけを
+#   対象にする（未指定ならdevelop向けの全OPEN PRを走査）。issue-deckの画面の
+#   「コンフリクトを自動解消」ボタンがこの経路で起動する（issue-deck#1293）。
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - requested
+    branches:
+      - develop
+  pull_request:
+    types:
+      - opened
+      - reopened
+    branches:
+      - develop
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "対象のIssue番号（未指定ならdevelop向けの全OPEN PRを走査する）"
+        required: false
+        type: string
+
+jobs:
+  conflict-resolve:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-conflict-resolve.yml@workflows/v23
+    with:
+      # signalyにはNodeが一切無い（package.jsonがルートにもfrontend/にも無く、
+      # frontend/は素のHTML/JS、scripts/は全てPythonかbash）。準備ステップで
+      # インストールするものが何も無いため minimal。
+      # 依存（backend/requirements.txt）のインストールは検証手順の中でClaude自身が行う。
+      runtime-setup: minimal
+      # **npm も pnpm も使わないが、既定値の npm のままにする。** この値は許可ツールの
+      # 出し分け（issue-deck#1147）にも使われ、pnpm にすると node が許可されなくなる。
+      # claude-issue-dispatch.yml と同じ理由・同じ値。
+      package-manager: npm
+      #
+      # **node-version は指定しない。** Nodeが無いリポジトリでバージョンを固定しても意味が無い。
+      # **Pythonのバージョンも指定できない。** CIはsetup-pythonで3.11に固定しているが、
+      # 共有ワークフローにPythonのプリセットは無く、ランナー標準のPythonを使う。
+      #
+      # 再利用ワークフロー内のinputsコンテキストはworkflow_callのinputsを指すため、
+      # 呼び出し元のworkflow_dispatch入力はここで明示的に渡す。
+      issue-number: ${{ inputs.issue_number }}
+      # プロンプトの「- 解消後、」に続けてそのまま埋め込まれるため、文末まで含めて1行で書く。
+      # YAMLの折りたたみ(>-)は改行を半角スペースへ変換し日本語の途中に空白が入るため、1行で書く。
+      # 内容は .github/workflows/ci.yml と同じ（このリポジトリにlint・buildは存在せず、
+      # CIもこのテストだけを実行している）。DB_NAME は backend/database.py がimport時に
+      # 要求するため必須で、テストは全てDBをモックしており実際の接続は行わない。
+      verify-commands: "`pip install -r backend/requirements.txt` で依存を入れたうえで `DB_NAME=ci_signaly python -m unittest discover -s backend -p 'test_*.py'` を実行し、問題がないことを確認する（このリポジトリにlint・buildは存在せず、CIもこのテストだけを実行している。DB_NAMEはbackend/database.pyがimport時に要求するだけで、テストは全てDBをモックしているため実際のDB接続もMySQLの起動も不要。Node・npmは使わない）"
+      # build-env はビルド工程が無いため指定しない。
+      # 上の uses: と同じタグを指定する。
+      prompts-ref: workflows/v23
+    # CLAUDE_CODE_OAUTH_TOKEN・WORKFLOW_PAT・PROGRESS_REPORT_SECRETを呼ばれる側へ渡す。
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
