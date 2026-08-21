@@ -1,0 +1,52 @@
+name: Claude PR Repair
+
+# 対応Issueを持たないPull Request（バージョンバンプPR・develop→mainのリリースPR）が
+# CI失敗またはコンフリクトで止まっているとき、Claude Codeによる自動修復を起動する
+# ワークフローの、本リポジトリ側のトリガー定義（guchi-apps/issue-deck#1293）。
+#
+# **このファイルはissue-deckの画面（設定＞フリート運用）から配布された雛形である**
+# （guchi-apps/issue-deck#1948）。`with:`の値は同じリポジトリの
+# claude-issue-dispatch.yml から写している。
+#
+# **workflow_dispatchのみ**で、自動検知のトリガーは持たない。CI失敗・コンフリクトを検知して
+# 自動で走る経路は claude-ci-fix.yml・claude-conflict-resolve.yml が持っており、そちらと
+# 二重に走らせないため。起動元はissue-deckの画面の「CI失敗を自動修正」
+# 「コンフリクトを自動解消」ボタン。
+#
+# 注意: workflow_dispatchの受け口はデフォルトブランチのワークフロー定義から解決されるため、
+# このファイルがデフォルトブランチへ入るまでは起動できない。
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "対象のPull Request番号"
+        required: true
+        type: string
+      mode:
+        description: "修復の種類"
+        required: true
+        type: choice
+        options:
+          - ci
+          - conflict
+
+jobs:
+  pr-repair:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-pr-repair.yml@workflows/v24
+    with:
+      runtime-setup: minimal
+      package-manager: npm
+      # 再利用ワークフロー内のinputsコンテキストはworkflow_callのinputsを指すため、
+      # 本ワークフローのworkflow_dispatch入力はここで明示的に渡す。
+      pr-number: ${{ inputs.pr_number }}
+      mode: ${{ inputs.mode }}
+      # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
+      # 古いプロンプトが使われる。
+      prompts-ref: workflows/v24
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
