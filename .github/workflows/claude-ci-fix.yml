@@ -1,0 +1,51 @@
+name: Claude CI Fix
+
+# develop向けPRのCIが失敗した際、Claude Codeが原因を調べて修正するワークフローの、
+# 本リポジトリ側のトリガー定義。ジョブ本体は持たず、issue-deckの再利用可能ワークフローを
+# 参照する（guchi-apps/issue-deck#1066）。
+#
+# **このファイルはissue-deckの画面（設定＞フリート運用）から配布された雛形である**
+# （guchi-apps/issue-deck#1948）。`with:`の値は同じリポジトリの
+# claude-issue-dispatch.yml から写している。検証コマンド（verify-commands）や
+# ビルド用の環境変数（build-env）はリポジトリごとに違うため入っていない。
+# 修正後の検証を強くしたい場合は、issue-deck本体のcallerを参考に後から足す。
+#
+# 参照はタグ固定にする。@developを参照するとissue-deck側の不具合が即座に波及するため。
+#
+# トリガー:
+# - workflow_run(CI / completed): CIの失敗を検知する。**このリポジトリのCI
+#   ワークフローの名前と一致していること**を確認する（違う名前なら発火しない）。
+#   なお workflow_run はデフォルトブランチ上のワークフローファイルでのみ発火する。
+# - workflow_dispatch: 手動実行と、**issue-deckの画面の「CI失敗を自動修正」ボタン**。
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "対象のIssue番号（develop向けPRのissue-<番号>ブランチのIssue番号）"
+        required: true
+        type: number
+
+jobs:
+  ci-fix:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-ci-fix.yml@workflows/v24
+    with:
+      runtime-setup: minimal
+      package-manager: npm
+      # 再利用ワークフロー内のinputsコンテキストはworkflow_callのinputsを指すため、
+      # 本ワークフローのworkflow_dispatch入力はここで明示的に渡す。
+      issue-number: ${{ inputs.issue_number }}
+      # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
+      # 古いプロンプトが使われる。
+      prompts-ref: workflows/v24
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
