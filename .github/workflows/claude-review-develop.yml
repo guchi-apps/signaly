@@ -1,0 +1,69 @@
+name: Claude Code Review (develop向けPR)
+
+# develop向けPRの作成・更新時に、機械的リスク判定・Claude Codeによる自動レビュー・
+# 低リスクPRの自動マージを行うワークフローの、本リポジトリ側のトリガー定義。ジョブ本体は
+# 持たず、issue-deckの再利用可能ワークフローを参照する
+# （guchi-apps/issue-deck#1078・#1090）。
+#
+# **このファイルはissue-deckの画面（設定＞フリート運用）から配布された雛形である**
+# （guchi-apps/issue-deck#1475）。`with:`はどのリポジトリでも同じ値で、このリポジトリ固有の
+# リスクパスは入っていない。認証・暗号化のように**パス名から判別できない領域**がある場合は、
+# issue-deck本体やdayspanのcallerを参考に`risk-paths`へ後から足す
+# （例: `^src/(proxy\.ts$|lib/(supabase|crypto)/)`）。
+#
+# 内蔵パターン（`.github/workflows/**`・`.env*`・`.shared-context/**`・
+# `prisma/migrations/**`・`**/auth/**`）は再利用ワークフロー側が常に判定するため書かない。
+# **入力はリスクを追加できるが削減はできない。**
+#
+# 参照はタグ固定にする。@developを参照するとissue-deck側の不具合が即座に波及するため。
+#
+# トリガー(`on:`)はジョブ本体と違って各リポジトリのcallerが持つコピーなので、issue-deck側で
+# 直しても波及しない（guchi-apps/issue-deck#1366）。
+#
+# **自動マージには`develop`のブランチ保護（必須ステータスチェック）が要る。** 保護が無いと
+# `gh pr merge --auto`が「既にマージ可能」として断られ、auto-merge-fallbackが毎回
+# `00.check-user`を付けるだけで終わる。配布時に画面側が保護まで作る
+# （guchi-apps/issue-deck#1475）。
+#
+# concurrency: develop向けPRへのpush(synchronize)のたびに起動するため、実装エージェントが
+# 同一PRへ連続してpushすると古いpush分のClaude Code呼び出しがそのまま走り切る（#818）。
+# 新しいpushが来たら古い実行を丸ごとキャンセルする。呼び出し元のワークフローレベルに置く
+# ことで、呼び出し先のジョブも一緒にキャンセルされる。
+concurrency:
+  group: claude-review-develop-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches:
+      - develop
+
+jobs:
+  review:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-review-develop.yml@workflows/v25
+    with:
+      # 内蔵パターンでは拾えないもののうち、**どのリポジトリにも共通で置けるぶん**だけ。
+      #
+      # - `.env.tpl`は内蔵の`.env*`（`(^|/)\.env`）に当たらない
+      #   （`.github/deploy.env.tpl`のようにファイル名の途中に現れるため）
+      # - デプロイ資材のディレクトリ名は`deploy/`と`deployment/`に割れている（myroom）
+      # - **`dependency-check`はルートの`package.json`しか見ない。** ルートに置いていない
+      #   リポジトリ（signalyは`backend/requirements.txt`だけ、myroomはルートが空スタブで
+      #   実体が`frontend/package.json`・`requirements.txt`）では依存の更新が一度も
+      #   リスク判定されないため、依存ファイルのパスで補う
+      risk-paths: |
+        ^deploy(ment)?/|\.env\.tpl$ :: 本番環境設定の変更 (deploy/**, deployment/**, **/*.env.tpl)
+        ^\.github/secrets-manifest\.tsv$ :: シークレット定義の変更 (.github/secrets-manifest.tsv)
+        (^|/)requirements[^/]*\.txt$|(^|/)pyproject\.toml$|(^|/)Pipfile$ :: 依存関係の変更 (requirements*.txt, pyproject.toml, Pipfile)
+        /package\.json$ :: ルート以外の依存関係の変更 (frontend/package.json など。dependency-checkはルートしか見ない)
+      # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
+      # 古いプロンプトが使われる。
+      prompts-ref: workflows/v25
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      id-token: write
