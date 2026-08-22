@@ -68,6 +68,18 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 本番VPSの `.env` は `deploy.yml` が書き込む。`deploy/setup.sh` は書かないため、新規にVPSを
 立てた場合は setup 後に Deploy を1回走らせる必要がある。
 
+### デプロイ後のヘルスチェック
+
+**`deploy/restart-service.sh` の成功は、デプロイの成功を意味しない。** 見ているのは
+`systemctl --user restart signaly` の終了コードだけで、これは**ユニットの起動要求が受け付けられた
+かどうか**しか表さない。uvicorn が `.env` の不備や依存の欠落で即死しても `Restart=always` で
+再起動を繰り返すだけなので、起動の成否は `deploy/health-check.sh`（`http://127.0.0.1:8002/` を
+2秒間隔・最大30回）で判定する（#168）。
+
+**ヘルスチェックを `restart-service.sh` の末尾に入れないこと。** `deploy/setup.sh` も
+`restart-service.sh` を呼ぶが、新規VPSでは `.env` がまだ無く signaly は起動できない。末尾に
+入れると初回セットアップが必ず60秒待って落ちる。呼び出しは `deploy.yml` 側からのみ行う。
+
 ## マルチエージェント運用（GitHub Actions 無人実行）
 
 `@claude` コメントを起点に、計画提示〜実装〜develop向けPR作成までを GitHub Actions 上で無人実行する。
