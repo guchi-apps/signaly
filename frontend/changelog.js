@@ -1,8 +1,15 @@
 'use strict'
 
-const APP_VERSION = '1.6.1'
+const APP_VERSION = '1.6.2'
 
 const APP_CHANGELOG = [
+  {
+    version: '1.6.2',
+    date: '2026-08-22',
+    changes: [
+      '（変更内容を追記してください）',
+    ],
+  },
   {
     version: '1.6.1',
     date: '2026-08-19',
