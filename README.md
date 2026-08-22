@@ -46,7 +46,6 @@ signaly/
 │   └── gen_vapid_keys.py # Web Push 用キー生成
 ├── .env.example          # 環境変数一覧（値なし）
 ├── .env.local.example    # ローカル開発用テンプレート（1Password 不要）
-├── .env.tpl              # 1Password 参照（本番用）
 └── version.json
 ```
 
@@ -123,7 +122,7 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `VAPID_*` | Web Push |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Named Tunnel（開発用） |
 
-本番 VPS では 1Password の値を GitHub Actions がデプロイ時に `.env` へ同期します（OAuth / SECRET_KEY / VAPID 含む）。ローカル開発は `.env.local`（1Password 不要）を使い、Google OAuth クライアントは本番と分離した開発用のものを使います。
+本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（OAuth / SECRET_KEY / VAPID 含む）。ローカル開発は `.env.local`（1Password 不要）を使い、Google OAuth クライアントは本番と分離した開発用のものを使います。
 
 ## Webhook
 
@@ -157,7 +156,27 @@ main へ push / workflow_dispatch
 
 **注意:** 同じバージョンのタグが別コミットに既にある場合、workflow はエラーで止まります。`python scripts/bump_version.py` で version を上げてから `main` へマージしてください。
 
-### 1Password
+### シークレットの取得先
+
+デプロイ・CI が実行時に読むのは **GitHub の secret / variable** です。1Password は「人が管理する
+唯一の正」として残し、**値を変えたときだけ** 1Password から GitHub へ同期します。以前は実行の
+たびに 1Password を読んでいましたが、サービスアカウントの日次レート制限（1Password アカウント
+全体で 1,000 リクエスト/日）を使い切ってデプロイが止まったため切り替えました
+（guchi-apps/issue-deck#1302）。
+
+どの値をどこ（repository / organization）から取るかの対応表は
+[`.github/secrets-manifest.tsv`](./.github/secrets-manifest.tsv) にあります。
+
+```bash
+op signin                                   # 個人アカウントで（サービスアカウントの枠を使わない）
+bash scripts/sync-github-secrets.sh --dry-run
+bash scripts/sync-github-secrets.sh
+```
+
+issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/sync-secrets.yml`）でも
+同じ同期を起こせます。
+
+#### 1Password 側のアイテム（値の正）
 
 | アイテム | フィールド | 用途 |
 |---------|-----------|------|
@@ -174,17 +193,20 @@ main へ push / workflow_dispatch
 
 `ci-webhook-url` / `login-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh`、Google ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST します。
 
-GitHub Actions は `.github/deploy.env.tpl` および `.github/ci.env.tpl` から上記を読み込みます。`known_hosts` は 1Password ではなく `ssh-keyscan` で取得します。
+`DB` / `Server` / `githubaction-sshkey` は他アプリと共通のため、GitHub 側では organization の共通
+シークレット（`SHARED_DB_*` / `SERVER_*`）として持ちます。`known_hosts` は 1Password ではなく
+`ssh-keyscan` で取得します。
 
-GitHub Secrets には `OP_SERVICE_ACCOUNT_TOKEN` のみ登録します。
+`OP_SERVICE_ACCOUNT_TOKEN` は repository secret に残していますが、デプロイ・CI の実行時には
+使いません。
 
 ### VPS 初回セットアップ
 
 ```bash
-op run --env-file=.env.tpl -- bash deploy/setup.sh
+bash deploy/setup.sh
 ```
 
-`setup.sh` は venv 作成・user systemd 登録（`loginctl enable-linger` は初回のみ sudo）まで行います。GitHub Actions デプロイは **sudo 不要**です。
+`setup.sh` は venv 作成・user systemd 登録（`loginctl enable-linger` は初回のみ sudo）まで行います。`.env` は書き込まないため、初回はこのあと `main` へのマージ（または Actions の **Deploy** の手動実行）を1回行ってください。GitHub Actions デプロイは **sudo 不要**です。
 
 初回のみ VPS に SSH して linger を有効化する場合:
 
@@ -194,7 +216,7 @@ sudo loginctl enable-linger "$(whoami)"
 
 Apache には `deploy/apache.conf` を `signaly.gucchii.com` 用 VirtualHost に追記してください（本番ポート **8002**、**ルート `/` をプロキシ**）。完全な例は `deploy/apache.vhost.example` を参照。
 
-1Password / VPS の `.env` では URL をルートに合わせます:
+1Password / GitHub secret / VPS の `.env` では URL をルートに合わせます:
 
 ```
 APP_URL=https://signaly.gucchii.com/
@@ -234,10 +256,11 @@ git commit -m "v1.0.1 をリリースする。"
 | `python scripts/bump_version.py [patch\|minor\|major]` | バージョン bump |
 | `python scripts/gen_vapid_keys.py <mailto:...>` | VAPID キー生成 |
 | `bash scripts/test-notify.sh` | テスト通知送信 |
+| `bash scripts/sync-github-secrets.sh [--dry-run]` | 1Password → GitHub の secret / variable 同期 |
 
 ## 設計ガイド
 
-VPS 構成・ポート規則・1Password 運用など共通ルールは [m-guchi/docs](https://github.com/m-guchi/docs/blob/main/README.md) を参照してください。
+VPS 構成・ポート規則・シークレット運用など共通ルールは [m-guchi/docs](https://github.com/m-guchi/docs/blob/main/README.md) を参照してください。
 
 ## CI/CD の既知の課題
 
