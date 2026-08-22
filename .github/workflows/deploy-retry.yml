@@ -1,0 +1,38 @@
+name: Deploy Retry
+
+# 本番デプロイ（`deploy.yml`）が一時的な失敗（SSH断・ネットワーク・アプリの起動待ちなど）で
+# 落ちたとき、人の操作を待たずに1回だけ再実行するワークフローの、本リポジトリ側のトリガー定義。
+# ジョブ本体は持たず、issue-deckの再利用可能ワークフローを参照する（guchi-apps/issue-deck#2134）。
+#
+# **コードを直す仕組みではない。** やるのは同じmainの`gh run rerun --failed`だけで、
+# 修正が要る失敗は対象外。上限は1回で、GitHubの`run_attempt`をそのまま上限に使っている。
+#
+# **このファイルはissue-deckの画面（設定＞フリート運用）から配布された雛形である**
+# （guchi-apps/issue-deck#1948）。
+#
+# 参照はタグ固定にする。@developを参照するとissue-deck側の不具合が即座に波及するため。
+#
+# トリガー:
+# - workflow_run(Deploy / completed): 本番デプロイの失敗を検知する。
+#   **このリポジトリの`deploy.yml`の`name:`と一致していること**を確認する（違う名前なら発火しない）。
+#   なお workflow_run はデフォルトブランチ上のワークフローファイルでのみ発火する。
+#
+# 再実行してよいジョブは`retryable-jobs`（既定: `build,deploy`）で決まる。**このリポジトリの
+# `deploy.yml`のジョブ名がこれと違う場合は明示すること**（既定と一致しないジョブだけが
+# 失敗したときは、安全側に倒れて再実行しない）。
+on:
+  workflow_run:
+    workflows:
+      - "Deploy"
+    types:
+      - completed
+
+jobs:
+  deploy-retry:
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-deploy-retry.yml@workflows/v25
+    with:
+      app-name: signaly
+    secrets: inherit
+    permissions:
+      actions: write
+      contents: read
