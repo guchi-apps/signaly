@@ -66,7 +66,7 @@ on:
 
 jobs:
   conflict-resolve:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-conflict-resolve.yml@workflows/v23
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-conflict-resolve.yml@workflows/v25
     with:
       # signalyにはNodeが一切無い（package.jsonがルートにもfrontend/にも無く、
       # frontend/は素のHTML/JS、scripts/は全てPythonかbash）。準備ステップで
@@ -93,7 +93,7 @@ jobs:
       verify-commands: "`pip install -r backend/requirements.txt` で依存を入れたうえで `DB_NAME=ci_signaly python -m unittest discover -s backend -p 'test_*.py'` を実行し、問題がないことを確認する（このリポジトリにlint・buildは存在せず、CIもこのテストだけを実行している。DB_NAMEはbackend/database.pyがimport時に要求するだけで、テストは全てDBをモックしているため実際のDB接続もMySQLの起動も不要。Node・npmは使わない）"
       # build-env はビルド工程が無いため指定しない。
       # 上の uses: と同じタグを指定する。
-      prompts-ref: workflows/v23
+      prompts-ref: workflows/v25
     # CLAUDE_CODE_OAUTH_TOKEN・WORKFLOW_PAT・PROGRESS_REPORT_SECRETを呼ばれる側へ渡す。
     secrets: inherit
     permissions:
