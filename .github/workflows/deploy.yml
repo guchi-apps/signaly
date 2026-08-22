@@ -186,6 +186,8 @@ jobs:
             bash deploy/ensure_venv.sh "${TARGET_DIR}"
 
             bash deploy/restart-service.sh "${TARGET_DIR}"
+
+            bash deploy/health-check.sh
           EOF
 
   release:
