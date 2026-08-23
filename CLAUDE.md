@@ -55,22 +55,39 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 
 ### アイコン
 
-`frontend/icon.svg` が唯一の原本で、PNG3枚（`icon-192.png` / `icon-512.png` /
-`apple-touch-icon.png`）は `scripts/generate_icons.py` が生成する。**PNGを直接編集しないこと。**
+**原本の SVG は3枚ある。用途ごとに要件が違うので、1枚で兼ねられない。**
+PNG は `scripts/generate_icons.py` が生成する。**PNGを直接編集しないこと。**
 
-**このスクリプトは ImageMagick の `convert` を呼ぶ。** subpc には既定で入っていないため、
-アイコンを差し替えるときは先に `sudo apt install -y imagemagick librsvg2-bin` が要る
-（`librsvg2-bin` はImageMagickがSVGを正しく描くための描画エンジン。無いと内蔵の簡易レンダラに
-落ちて、arc や `stroke-linecap` が壊れる）。sudo はパスワードを求めるのでエージェントは実行できない。
+| 原本 | 生成物 | 要件 |
+|---|---|---|
+| `frontend/icon.svg` | `icon-192.png` / `icon-512.png` | 角丸タイル。そのまま表示される用途（`purpose:any`・タブ・PWA一覧） |
+| `frontend/icon-full.svg` | `icon-maskable-512.png` / `apple-touch-icon.png` | **角丸なし・四隅まで不透明。** |
+| `frontend/icon-badge.svg` | `badge-72.png` | **前景シルエットのみ・背景透過・単色。** |
 
-**図形は中央 半径205px（キャンバスの80%）の円の内側に収めること。** `manifest.json` は
-`icon-512.png` を `purpose:"maskable"` としても宣言しており、Androidのランチャーは
-この安全円の外を切り落とす。v1.6.3以前の稲妻は下端の尖端が206.6pxにあり、1.8pxだけはみ出していた
-（#173。見た目の実害はほぼ無い程度だが、新しい図形は余裕をもって内側に収めること）。
+**maskable を角丸で作らないこと。** maskable は「全面が不透明で、ランチャーが好きな形に切り抜く」
+前提のアセット。`convert -background none` で角丸SVGをPNG化すると四隅が透過のまま残り、
+円マスク以外（角丸正方形・正方形）では角から壁紙が透ける。iOS も `apple-touch-icon` の透過を
+黒で合成するため、地色を黒以外にすると四隅にだけ黒が残る（#173）。
+
+**通知バッジに `icon-192.png` を流用しないこと。** Android のステータスバーはバッジ画像の
+**アルファチャンネルだけ**をマスクとして使い、不透明部分を白一色で塗り潰す。地色入りの
+アイコンを渡すと角丸矩形の塊になり、形が一切判別できない（#173）。
+
+**図形は中央 半径205px（キャンバスの80%）の円の内側に収めること。** Androidのランチャーは
+maskable のこの安全円の外を切り落とす。v1.6.3以前の稲妻は下端の尖端が206.6pxにあり、
+1.8pxだけはみ出していた（見た目の実害はほぼ無い程度だが、新しい図形は余裕をもって内側に）。
 
 **`?v=` は手で書き換えない。** `scripts/bump_version.py` が `manifest.json`・`index.html`・
 `api-key-docs.html`・`sw.js` を一括で揃える。したがってアイコンを差し替えても、ブラウザや
 インストール済みPWAのキャッシュが入れ替わるのは**次のバージョン更新のタイミング**になる。
+**アセットを増やしたら `sw.js` 側の置換が届いているか確かめること**（以前は `icon-192.png`
+決め打ちの正規表現だった）。
+
+**`theme_color` / `background_color` はアイコンの地色ではなくUIの色。** 前者はブラウザ/OSの
+ツールバー色、後者はPWA起動時スプラッシュの背景色で、実際のUI背景（`--bg: #0d0d0d`）と揃える。
+アイコンの地色を変えてもここは追随させない。変える場合は `manifest.json` だけでなく
+`index.html`・`api-key-docs.html`・`webhook-docs.html` の `<meta name="theme-color">` も
+セットで直すこと（4か所ある）。
 
 ### シークレットの取得先
 
