@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # VPS 初回セットアップスクリプト
-# 実行: op run --env-file=.env.tpl -- bash deploy/setup.sh
+# 実行: bash deploy/setup.sh
 set -euo pipefail
 
 TARGET_DIR="${TARGET_DIR:-/apps/signaly}"
@@ -24,11 +24,15 @@ rsync -az --delete \
 echo "==> Python 仮想環境を作成"
 bash "$TARGET_DIR/deploy/ensure_venv.sh" "$TARGET_DIR"
 
-echo "==> .env を 1Password から生成"
-if command -v op >/dev/null 2>&1; then
-  op inject -i "${TARGET_DIR}/.env.tpl" -o "${TARGET_DIR}/.env" --force
+echo "==> .env の確認"
+# .env はデプロイ（.github/workflows/deploy.yml）が GitHub の secret / variable から
+# 書き込む。以前はここで 1Password の .env.tpl を op inject していたが、実行時の
+# 1Password 呼び出しを外した際に .env.tpl ごと廃止した（guchi-apps/issue-deck#1302）。
+if [[ -f "${TARGET_DIR}/.env" ]]; then
+  echo "  ${TARGET_DIR}/.env は既に存在します"
 else
-  echo "  !! op CLI がありません。1Password の値を ${TARGET_DIR}/.env に手動で設定してください"
+  echo "  !! ${TARGET_DIR}/.env はまだありません。"
+  echo "     main へのマージ（または Actions の Deploy の手動実行）を1回行うと書き込まれます。"
 fi
 
 echo "==> channels.json が存在しない場合は例をコピー"

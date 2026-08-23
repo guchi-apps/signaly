@@ -53,6 +53,33 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 **`package.json` ではなく `version.json`**（`{"version": "1.5.8"}`）。
 更新は `scripts/bump_version.py`。**手で書き換えないこと。**
 
+### シークレットの取得先
+
+デプロイ・CIが実行時に読むのは**GitHubのsecret / variable**。1Passwordは人が管理する正で、
+値を変えたときだけ `scripts/sync-github-secrets.sh` で同期する（対応表は
+`.github/secrets-manifest.tsv`）。**`.env.tpl` / `.github/deploy.env.tpl` / `.github/ci.env.tpl`
+は廃止済み**（guchi-apps/issue-deck#1302）。
+
+**`.github/workflows/` に `op://` が無いことは、移行が終わった証拠にならない。** `.env.tpl` を
+消したことで `deploy/setup.sh` や `scripts/check_vapid_keys.py` のような**ワークフロー外の経路**が
+存在しないファイルを参照したまま残っていた（#132）。移行の確認はリポジトリ全体を
+`grep -rn '\.env\.tpl'` すること。
+
+本番VPSの `.env` は `deploy.yml` が書き込む。`deploy/setup.sh` は書かないため、新規にVPSを
+立てた場合は setup 後に Deploy を1回走らせる必要がある。
+
+### デプロイ後のヘルスチェック
+
+**`deploy/restart-service.sh` の成功は、デプロイの成功を意味しない。** 見ているのは
+`systemctl --user restart signaly` の終了コードだけで、これは**ユニットの起動要求が受け付けられた
+かどうか**しか表さない。uvicorn が `.env` の不備や依存の欠落で即死しても `Restart=always` で
+再起動を繰り返すだけなので、起動の成否は `deploy/health-check.sh`（`http://127.0.0.1:8002/` を
+2秒間隔・最大30回）で判定する（#168）。
+
+**ヘルスチェックを `restart-service.sh` の末尾に入れないこと。** `deploy/setup.sh` も
+`restart-service.sh` を呼ぶが、新規VPSでは `.env` がまだ無く signaly は起動できない。末尾に
+入れると初回セットアップが必ず60秒待って落ちる。呼び出しは `deploy.yml` 側からのみ行う。
+
 ## マルチエージェント運用（GitHub Actions 無人実行）
 
 `@claude` コメントを起点に、計画提示〜実装〜develop向けPR作成までを GitHub Actions 上で無人実行する。

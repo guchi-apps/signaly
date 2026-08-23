@@ -4,7 +4,9 @@
 使い方:
   # 1Password から読み込む
   op signin
-  op run --env-file=.env.tpl -- python scripts/check_vapid_keys.py
+  VAPID_PUBLIC_KEY="$(op read op://apps/signaly/vapid-public-key)" \
+  VAPID_PRIVATE_KEY="$(op read op://apps/signaly/vapid-private-key)" \
+  python scripts/check_vapid_keys.py
 
   # 環境変数から読み込む（.env.local 等）
   set -a && source .env.local && set +a
