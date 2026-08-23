@@ -80,9 +80,14 @@ Supabase の JWKS で署名を検証する（#110）。
 `.env.local` へ直接書く（1Password 依存を避けるため）。Redirect URLs には
 `<ベースURL>/auth/callback` を登録する。
 
-Signaly 自身のログイン通知も、他アプリと同じく Supabase の Database Webhooks から
-`POST /notify/app-login/signaly` で受ける。**アプリ側にログイン通知のコードは持たない**
-（`LOGIN_WEBHOOK_URL` と `login_notify.py` は #110 で廃止した）。
+**Signaly 自身のログイン通知に `/notify/app-login/*` を使わないこと。** Supabase プロジェクトは
+複数アプリで共有していて `auth.users` はプロジェクトに1つしかなく、そこへ掛けた Database
+Webhook は他アプリのログインでも発火する。`{app_id}` は設定時に選んだ**表示名にすぎず**
+（`backend/main.py` の `/notify/app-login/{app_id}` のコメント）、通知の中身は Supabase の行
+データだけから組むため、どのアプリへのログインかを区別できない。Signaly のログイン通知は
+`POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py` から送る
+（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
+付けないこと**——ログインしていないのに通知が飛ぶ）。
 
 ### バージョン管理
 

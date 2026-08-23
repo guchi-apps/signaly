@@ -21,6 +21,11 @@ import app_login
 import auth
 import supabase_auth
 from database import ApiKey, Channel, ChannelGroup, Notification, PushSubscription, get_session, init_db
+from login_notify import (
+    build_login_notification,
+    send_login_notification,
+    user_info_from_claims,
+)
 from notification_prefs import (
     delete_settings_for_target,
     get_notification_settings,
@@ -383,6 +388,11 @@ def _delete_notifications(ids: List[str]) -> Dict[str, List[str]]:
     return deleted_by_channel
 
 
+async def _notify_login(email: str, claims: dict, request: Request) -> None:
+    payload = build_login_notification(email, user_info_from_claims(claims), request)
+    await send_login_notification(payload)
+
+
 def _save_notification(entry: dict) -> None:
     with get_session() as session:
         session.add(
@@ -581,16 +591,26 @@ async def auth_callback_page():
 
 class SessionRequest(BaseModel):
     access_token: str
+    # 認証コールバックを終えた直後だけ "login"。トークン更新のたびに
+    # 貼り直される Cookie でログイン通知が飛ばないよう、明示的に区別する。
+    event: Optional[str] = None
 
 
 @app.post("/auth/session")
-async def auth_session(payload: SessionRequest, response: Response):
+async def auth_session(payload: SessionRequest, request: Request, response: Response):
     """検証済みの Supabase トークンと引き換えに、SSE 用のセッション Cookie を発行する。
 
     EventSource は Authorization ヘッダーを付けられないため、ここだけ Cookie に頼る。
     トークンを URL へ載せないための経路であって、独自のログイン手段ではない。
+
+    Signaly へのログイン通知もここが起点になる。共有 Supabase プロジェクトの
+    Database Webhooks はどのアプリへのログインかを区別できないため
+    （login_notify.py の docstring 参照）、アプリ側で通知する。
     """
-    email = await auth.verify_supabase_token(payload.access_token)
+    claims = await auth.verify_supabase_claims(payload.access_token)
+    email = supabase_auth.email_from_claims(claims)
+    if payload.event == "login":
+        asyncio.create_task(_notify_login(email, claims, request))
     response.set_cookie(
         auth.SESSION_COOKIE,
         auth.sign_value(email),

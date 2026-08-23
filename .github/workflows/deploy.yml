@@ -74,6 +74,7 @@ jobs:
       ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
       APP_URL: ${{ secrets.APP_URL }}
       DB_NAME: ${{ secrets.DB_NAME }}
+      LOGIN_WEBHOOK_URL: ${{ secrets.LOGIN_WEBHOOK_URL }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
       TARGET_DIR: ${{ secrets.TARGET_DIR }}
@@ -107,6 +108,7 @@ jobs:
           APP_URL:              ${{ env.APP_URL }}
           ALLOWED_EMAILS:       ${{ env.ALLOWED_EMAILS }}
           SECRET_KEY:           ${{ env.SECRET_KEY }}
+          LOGIN_WEBHOOK_URL:    ${{ env.LOGIN_WEBHOOK_URL }}
           VAPID_PUBLIC_KEY:     ${{ env.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY:    ${{ env.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT:        ${{ env.VAPID_SUBJECT }}
@@ -125,6 +127,7 @@ jobs:
           APP_URL_B64=$(b64 "$APP_URL")
           ALLOWED_EMAILS_B64=$(b64 "$ALLOWED_EMAILS")
           SECRET_KEY_B64=$(b64 "$SECRET_KEY")
+          LOGIN_WEBHOOK_URL_B64=$(b64 "$LOGIN_WEBHOOK_URL")
           VAPID_PUBLIC_KEY_B64=$(b64 "$VAPID_PUBLIC_KEY")
           VAPID_PRIVATE_KEY_B64=$(b64 "$VAPID_PRIVATE_KEY")
           VAPID_SUBJECT_B64=$(b64 "$VAPID_SUBJECT")
@@ -174,6 +177,7 @@ jobs:
             sync_env_var APP_URL              '${APP_URL_B64}'
             sync_env_var ALLOWED_EMAILS       '${ALLOWED_EMAILS_B64}'
             sync_env_var SECRET_KEY           '${SECRET_KEY_B64}'
+            sync_env_var LOGIN_WEBHOOK_URL    '${LOGIN_WEBHOOK_URL_B64}'
             sync_env_var VAPID_PUBLIC_KEY     '${VAPID_PUBLIC_KEY_B64}'
             write_vapid_private_key           '${VAPID_PRIVATE_KEY_B64}'
             sync_env_var VAPID_SUBJECT        '${VAPID_SUBJECT_B64}'
@@ -189,7 +193,6 @@ jobs:
             remove_env_var GOOGLE_CLIENT_ID
             remove_env_var GOOGLE_CLIENT_SECRET
             remove_env_var GOOGLE_REDIRECT_URI
-            remove_env_var LOGIN_WEBHOOK_URL
 
             bash deploy/ensure_venv.sh "${TARGET_DIR}"
 

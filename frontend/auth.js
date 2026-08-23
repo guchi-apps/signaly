@@ -77,16 +77,21 @@ const SignalyAuth = (() => {
    * SSE 用のセッション Cookie を発行する。
    * EventSource は Authorization ヘッダーを付けられないため、接続前に一度だけ通す。
    * 同じトークンで貼り直す意味は無いので、トークンが変わったときだけ叩く。
+   *
+   * `event: 'login'` を渡すとサーバー側でログイン通知が飛ぶ。認証コールバックを
+   * 終えた直後（callback.html）だけが渡すこと。トークン更新のたびに渡すと、
+   * ログインしていないのに通知が飛ぶ。
    */
-  function ensureSessionCookie() {
+  function ensureSessionCookie(event) {
     return getAccessToken().then((token) => {
       if (!token) return false
-      if (token === lastCookieToken && sessionCookiePromise) return sessionCookiePromise
+      if (!event && token === lastCookieToken && sessionCookiePromise) return sessionCookiePromise
       lastCookieToken = token
+      const body = event ? { access_token: token, event } : { access_token: token }
       sessionCookiePromise = fetch(appUrl('auth/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ access_token: token }),
+        body: JSON.stringify(body),
       })
         .then((res) => res.ok)
         .catch(() => false)

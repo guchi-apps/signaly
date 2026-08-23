@@ -91,8 +91,8 @@ def is_allowed_email(email: str) -> bool:
     return bool(email) and email.lower() in ALLOWED_EMAILS
 
 
-async def verify_supabase_token(token: str) -> str:
-    """Supabase の access_token を検証し、許可されたメールアドレスを返す。
+async def verify_supabase_claims(token: str) -> dict:
+    """Supabase の access_token を検証し、検証済みのクレームを返す。
 
     署名・有効期限・発行元の検証は supabase_auth 側で行う。
     許可ユーザーの判定はここで行い、通らなければ 403 にする
@@ -109,7 +109,13 @@ async def verify_supabase_token(token: str) -> str:
             status_code=403,
             detail="このアカウントはアクセスが許可されていません",
         )
-    return email
+    return claims
+
+
+async def verify_supabase_token(token: str) -> str:
+    """検証済みのメールアドレスだけが欲しいときの薄いラッパー。"""
+    claims = await verify_supabase_claims(token)
+    return supabase_auth.email_from_claims(claims)
 
 
 # main.py が起動時に差し替える

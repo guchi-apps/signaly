@@ -57,8 +57,9 @@
       return
     }
 
-    // SSE 用の Cookie をここで貼っておくと、アプリ側は初回から通知を購読できる
-    await SignalyAuth.ensureSessionCookie()
+    // SSE 用の Cookie をここで貼っておくと、アプリ側は初回から通知を購読できる。
+    // ログイン通知が飛ぶのもここだけ（トークン更新では飛ばさない）。
+    await SignalyAuth.ensureSessionCookie('login')
     back()
   } catch {
     back('?authError=failed')

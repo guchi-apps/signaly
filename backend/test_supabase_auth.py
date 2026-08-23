@@ -207,6 +207,42 @@ class AuthEndpointTest(SupabaseAuthTestBase):
         # Authorization を付けなくても Cookie だけで通る（EventSource 用）
         self.assertEqual(self.client.get("/auth/me").status_code, 200)
 
+    def test_session_notifies_login_only_when_event_is_login(self):
+        """ログイン通知が飛ぶのは認証コールバック直後だけ。
+
+        Cookie はトークン更新のたびに貼り直されるため、event を見ずに通知すると
+        ログインしていないのに通知が飛ぶ。
+        """
+        sent = []
+
+        async def fake_notify(email, claims, request):
+            sent.append((email, claims))
+
+        with patch.object(main, "_notify_login", fake_notify):
+            self.client.post("/auth/session", json={"access_token": make_token()})
+            self.assertEqual(sent, [], "event 無しで通知が飛んでいる")
+
+            self.client.post(
+                "/auth/session", json={"access_token": make_token(), "event": "login"}
+            )
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][0], ALLOWED_EMAIL)
+
+    def test_login_notification_is_not_sent_for_rejected_account(self):
+        """許可されていないアカウントのログインは通知しない。"""
+        sent = []
+
+        async def fake_notify(email, claims, request):
+            sent.append(email)
+
+        with patch.object(main, "_notify_login", fake_notify):
+            res = self.client.post(
+                "/auth/session",
+                json={"access_token": make_token(email="stranger@example.com"), "event": "login"},
+            )
+        self.assertEqual(res.status_code, 403)
+        self.assertEqual(sent, [])
+
     def test_session_rejects_invalid_token(self):
         res = self.client.post("/auth/session", json={"access_token": "not-a-jwt"})
         self.assertEqual(res.status_code, 401)

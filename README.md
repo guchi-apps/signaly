@@ -120,6 +120,7 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
 | `APP_URL` | ベース URL |
 | `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
+| `LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない） |
 | `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Named Tunnel（開発用） |
@@ -184,6 +185,7 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 |---------|-----------|------|
 | `signaly` | `app-url` | `https://signaly.gucchii.com/` |
 | `signaly` | `allowed-emails` / `secret-key` | ログイン許可・SSE 用 Cookie の署名 |
+| `signaly` | `login-webhook-url` | ログイン通知（Signaly Webhook URL 全文） |
 | `Supabase` | `project-url` / `publishable-key` | Supabase Auth（全アプリ共通。GitHub 側は organization の variable） |
 | `signaly` | `vapid-*` | Web Push |
 | `signaly` | `target-dir` / `db-name` | デプロイ先・DB 名 |
@@ -192,9 +194,9 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 | `githubaction-sshkey` | `private_key` | GitHub Actions 用 SSH 秘密鍵 |
 | `signaly` | `ci-webhook-url` | CI / デプロイ通知（Signaly Webhook URL 全文） |
 
-`ci-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh` から POST します。
+`ci-webhook-url` / `login-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST します。
 
-Signaly 自身のログイン通知は、他アプリと同じく Supabase の Database Webhooks から `POST /notify/app-login/signaly` で受けます（アプリ側に通知用の環境変数は不要）。
+**Signaly 自身のログイン通知に `/notify/app-login/*` は使えません。** Supabase プロジェクトは複数アプリで共有しており、`auth.users` に掛けた Database Webhook は他アプリのログインでも発火するため、どのアプリへのログインかを区別できないためです（`{app_id}` は表示名にすぎません）。
 
 `DB` / `Server` / `githubaction-sshkey` は他アプリと共通のため、GitHub 側では organization の共通
 シークレット（`SHARED_DB_*` / `SERVER_*`）として持ちます。`known_hosts` は 1Password ではなく
