@@ -68,14 +68,12 @@ jobs:
       HOST: ${{ secrets.SERVER_HOST }}
       SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
       SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      SUPABASE_URL: ${{ vars.SUPABASE_PROJECT_URL }}
       USERNAME: ${{ secrets.SERVER_USERNAME }}
       ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
       APP_URL: ${{ secrets.APP_URL }}
       DB_NAME: ${{ secrets.DB_NAME }}
-      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
-      LOGIN_WEBHOOK_URL: ${{ secrets.LOGIN_WEBHOOK_URL }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
       TARGET_DIR: ${{ secrets.TARGET_DIR }}
@@ -104,13 +102,11 @@ jobs:
           DB_PASSWORD:          ${{ env.DB_PASSWORD }}
           DB_HOST:              ${{ env.DB_HOST }}
           DB_PORT:              ${{ env.DB_PORT }}
-          GOOGLE_CLIENT_ID:     ${{ env.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ env.GOOGLE_CLIENT_SECRET }}
-          GOOGLE_REDIRECT_URI:  ${{ env.GOOGLE_REDIRECT_URI }}
+          SUPABASE_URL:         ${{ env.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ env.SUPABASE_PUBLISHABLE_KEY }}
           APP_URL:              ${{ env.APP_URL }}
           ALLOWED_EMAILS:       ${{ env.ALLOWED_EMAILS }}
           SECRET_KEY:           ${{ env.SECRET_KEY }}
-          LOGIN_WEBHOOK_URL:    ${{ env.LOGIN_WEBHOOK_URL }}
           VAPID_PUBLIC_KEY:     ${{ env.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY:    ${{ env.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT:        ${{ env.VAPID_SUBJECT }}
@@ -124,13 +120,11 @@ jobs:
             ./ "${USERNAME}@${HOST}:${TARGET_DIR}/"
 
           b64() { printf '%s' "$1" | base64 -w 0; }
-          GOOGLE_CLIENT_ID_B64=$(b64 "$GOOGLE_CLIENT_ID")
-          GOOGLE_CLIENT_SECRET_B64=$(b64 "$GOOGLE_CLIENT_SECRET")
-          GOOGLE_REDIRECT_URI_B64=$(b64 "$GOOGLE_REDIRECT_URI")
+          SUPABASE_URL_B64=$(b64 "$SUPABASE_URL")
+          SUPABASE_PUBLISHABLE_KEY_B64=$(b64 "$SUPABASE_PUBLISHABLE_KEY")
           APP_URL_B64=$(b64 "$APP_URL")
           ALLOWED_EMAILS_B64=$(b64 "$ALLOWED_EMAILS")
           SECRET_KEY_B64=$(b64 "$SECRET_KEY")
-          LOGIN_WEBHOOK_URL_B64=$(b64 "$LOGIN_WEBHOOK_URL")
           VAPID_PUBLIC_KEY_B64=$(b64 "$VAPID_PUBLIC_KEY")
           VAPID_PRIVATE_KEY_B64=$(b64 "$VAPID_PRIVATE_KEY")
           VAPID_SUBJECT_B64=$(b64 "$VAPID_SUBJECT")
@@ -154,6 +148,14 @@ jobs:
               printf '%s=%s\n' "\$key" "\$value" >> .env
             }
 
+            remove_env_var() {
+              key="\$1"
+              touch .env
+              if grep -q "^\${key}=" .env; then
+                grep -v "^\${key}=" .env > .env.tmp && mv .env.tmp .env
+              fi
+            }
+
             write_vapid_private_key() {
               printf '%s' "\$1" | base64 -d > backend/vapid_private.pem
               chmod 600 backend/vapid_private.pem
@@ -167,13 +169,11 @@ jobs:
               printf '%s=%s\n' 'VAPID_PRIVATE_KEY_FILE' 'vapid_private.pem' >> .env
             }
 
-            sync_env_var GOOGLE_CLIENT_ID     '${GOOGLE_CLIENT_ID_B64}'
-            sync_env_var GOOGLE_CLIENT_SECRET '${GOOGLE_CLIENT_SECRET_B64}'
-            sync_env_var GOOGLE_REDIRECT_URI  '${GOOGLE_REDIRECT_URI_B64}'
+            sync_env_var SUPABASE_URL             '${SUPABASE_URL_B64}'
+            sync_env_var SUPABASE_PUBLISHABLE_KEY '${SUPABASE_PUBLISHABLE_KEY_B64}'
             sync_env_var APP_URL              '${APP_URL_B64}'
             sync_env_var ALLOWED_EMAILS       '${ALLOWED_EMAILS_B64}'
             sync_env_var SECRET_KEY           '${SECRET_KEY_B64}'
-            sync_env_var LOGIN_WEBHOOK_URL    '${LOGIN_WEBHOOK_URL_B64}'
             sync_env_var VAPID_PUBLIC_KEY     '${VAPID_PUBLIC_KEY_B64}'
             write_vapid_private_key           '${VAPID_PRIVATE_KEY_B64}'
             sync_env_var VAPID_SUBJECT        '${VAPID_SUBJECT_B64}'
@@ -182,6 +182,14 @@ jobs:
             sync_env_var DB_PASSWORD          '${DB_PASSWORD_B64}'
             sync_env_var DB_HOST              '${DB_HOST_B64}'
             sync_env_var DB_PORT              '${DB_PORT_B64}'
+
+            # Supabase Auth へ移行して使わなくなった値（guchi-apps/signaly#110）。
+            # sync_env_var は書き込む鍵しか触らないため、明示的に消さないと
+            # 本番の .env に旧 Google OAuth の資格情報が残り続ける。
+            remove_env_var GOOGLE_CLIENT_ID
+            remove_env_var GOOGLE_CLIENT_SECRET
+            remove_env_var GOOGLE_REDIRECT_URI
+            remove_env_var LOGIN_WEBHOOK_URL
 
             bash deploy/ensure_venv.sh "${TARGET_DIR}"
 

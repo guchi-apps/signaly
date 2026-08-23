@@ -32,7 +32,8 @@ def sync_asset_versions(version: str) -> None:
     manifest.write_text(text, encoding="utf-8")
     print(f"manifest.json のアイコン URL を v={version} に更新しました。")
 
-    for name in ("index.html", "api-key-docs.html"):
+    # アセットを増やしたらここへ足す。取りこぼすと、そのファイルだけ古い ?v= のまま残る
+    for name in ("index.html", "api-key-docs.html", "auth/callback.html"):
         path = FRONTEND_DIR / name
         text = path.read_text(encoding="utf-8")
         text = re.sub(r"\?v=[0-9.]+", f"?v={version}", text)

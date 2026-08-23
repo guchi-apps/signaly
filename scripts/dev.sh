@@ -95,8 +95,7 @@ if [[ -z "$TUNNEL_URL" ]]; then
     cat "$CF_LOG"
     exit 1
   fi
-  update_env "GOOGLE_REDIRECT_URI" "${TUNNEL_URL}/auth/callback"
-  update_env "APP_URL"              "${TUNNEL_URL}/"
+  update_env "APP_URL" "${TUNNEL_URL}/"
 fi
 
 echo "==> Tunnel URL: $TUNNEL_URL"
@@ -157,7 +156,7 @@ if [[ -n "$TUNNEL_HOSTNAME" ]]; then
   echo "             （固定 URL — 再起動しても変わりません）"
 fi
 echo ""
-echo "  Google Cloud Console に登録するリダイレクト URI:"
+echo "  開発用 Supabase の Redirect URLs に登録する URL:"
 echo "  ${TUNNEL_URL}/auth/callback"
 echo ""
 echo "  Ctrl+C で終了"
