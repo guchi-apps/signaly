@@ -26,7 +26,47 @@ https://<your-host>/webhook/<channel_id>
 > ペイロードの形を自分で決められない送信元（Supabase の Database Webhooks など）向けには、
 > 専用の受け口があります。→ [アプリのログイン通知（Supabase Database Webhooks）](#アプリのログイン通知supabase-database-webhooks)
 
-**内部データモデルについて:** 受信したペイロードは形式によらず、最終的に `title` / `message` / `level` / `color` / `fields` の5項目に正規化されて保存・配信されます。Discord 形式の `content` はそのままの形では保持されず、後述のルールで `title` / `message` に変換されます。
+**内部データモデルについて:** 受信したペイロードは形式によらず、最終的に `title` / `message` / `level` / `color` / `fields` / `source` の6項目に正規化されて保存・配信されます。Discord 形式の `content` はそのままの形では保持されず、後述のルールで `title` / `message` に変換されます。
+
+---
+
+## 送信元（`source`）
+
+チャンネルを用途ごと（CI・ログインなど）に1本へまとめると、1つのフィードに複数のアプリの
+通知が混ざります。**どのアプリから来たかは `source` として通知ごとに保存**され、通知カードの
+バッジと、チャンネル上部の絞り込みチップに使われます。
+
+送信元は次の順で決まります。**送信側で何も指定しなくても、CI 通知は `App` フィールドから
+自動で付きます**（`.github/scripts/signaly-notify.sh` はこのフィールドを必ず載せています）。
+
+| 優先 | 決まり方 | 例 |
+|------|---------|-----|
+| 1 | リクエストヘッダー `X-Signaly-Source` | `X-Signaly-Source: signaly` |
+| 2 | クエリパラメータ `?source=` | `/webhook/<channel_id>?source=バックアップ` |
+| 3 | ペイロードの `source` キー | `{"message": "...", "source": "cron"}` |
+| 4 | `fields` の `App` → `Repository` | `{"name": "App", "value": "Signaly"}` → `Signaly` |
+| 5 | Discord 形式の `username` | `{"username": "Grafana"}` → `Grafana` |
+
+- `Repository` から拾う場合はバッククォートを外し、`owner/repo` の**リポジトリ名だけ**を使います（`` `guchi-apps/car-care` `` → `car-care`）。
+- 100 文字を超える場合は切り詰められます。
+- **HTTP ヘッダーは ASCII しか運べません。** 日本語の送信元名を使う場合は `?source=`（URL エンコード）かペイロードの `source` キーを使ってください。
+- どれにも当てはまらない場合、送信元は未設定になります（絞り込みチップでは「送信元なし」として扱われます）。
+
+```bash
+curl -X POST "$SIGNALY_WEBHOOK_URL" \
+  -H "Content-Type: application/json" \
+  -H "X-Signaly-Source: backup-job" \
+  -d '{"title":"バックアップ完了","message":"3.2GB"}'
+```
+
+### チャンネルを統合したあとの Webhook URL
+
+チャンネル設定の **別のチャンネルへ統合** で1本にまとめると、統合元のチャンネルは消えますが
+**統合元の Webhook URL はそのまま使えます**（統合先へ転送されます）。各リポジトリの
+1Password / GitHub secret を書き換える必要はありません。
+
+転送されてきた通知の送信元は、上の表で決まらなかった場合にかぎり、統合時に指定した送信元名
+（既定は統合元のチャンネル名）が使われます。
 
 ---
 
@@ -323,9 +363,10 @@ Discord は `204 No Content` を返しますが、Signaly は通知 ID を返し
 
 ## 受信後の動作
 
-1. **DB に保存** — 通知履歴として永続化
-2. **SSE で配信** — 該当チャンネルを開いているブラウザにリアルタイム表示
-3. **Web Push** — VAPID が設定されていれば、登録済み端末へプッシュ通知
+1. **送信元を判定** — [送信元（`source`）](#送信元source) のルールで決定
+2. **DB に保存** — 通知履歴として永続化
+3. **SSE で配信** — 該当チャンネルを開いているブラウザにリアルタイム表示
+4. **Web Push** — VAPID が設定されていれば、登録済み端末へプッシュ通知（本文の先頭に送信元が付きます）
 
 ---
 
@@ -482,6 +523,10 @@ Supabase の Database Webhooks が送る形をそのまま受け取ります。
 | ユーザーID | `user_id` / `id`（メールもユーザー名も取れなかった場合のみ） |
 | 日時 | `last_sign_in_at` → `created_at` → 受信時刻 |
 | User-Agent | `user_agent` |
+
+URL パスの `<app_id>` はタイトル（`🔐 <app_id> ログイン`）に加えて
+[送信元（`source`）](#送信元source) にもなります。**複数アプリのログイン通知を1本の
+チャンネルへ集約しても、アプリごとに絞り込めます。**
 
 **`auth.users` の行にはパスワードハッシュ（`encrypted_password`）や各種トークン
 （`confirmation_token` / `recovery_token` / `email_change_token_*` /
