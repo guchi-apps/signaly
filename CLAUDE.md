@@ -53,6 +53,25 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 **`package.json` ではなく `version.json`**（`{"version": "1.5.8"}`）。
 更新は `scripts/bump_version.py`。**手で書き換えないこと。**
 
+### アイコン
+
+`frontend/icon.svg` が唯一の原本で、PNG3枚（`icon-192.png` / `icon-512.png` /
+`apple-touch-icon.png`）は `scripts/generate_icons.py` が生成する。**PNGを直接編集しないこと。**
+
+**このスクリプトは ImageMagick の `convert` を呼ぶ。** subpc には既定で入っていないため、
+アイコンを差し替えるときは先に `sudo apt install -y imagemagick librsvg2-bin` が要る
+（`librsvg2-bin` はImageMagickがSVGを正しく描くための描画エンジン。無いと内蔵の簡易レンダラに
+落ちて、arc や `stroke-linecap` が壊れる）。sudo はパスワードを求めるのでエージェントは実行できない。
+
+**図形は中央 半径205px（キャンバスの80%）の円の内側に収めること。** `manifest.json` は
+`icon-512.png` を `purpose:"maskable"` としても宣言しており、Androidのランチャーは
+この安全円の外を切り落とす。v1.6.3以前の稲妻は下端の尖端が206.6pxにあり、1.8pxだけはみ出していた
+（#173。見た目の実害はほぼ無い程度だが、新しい図形は余裕をもって内側に収めること）。
+
+**`?v=` は手で書き換えない。** `scripts/bump_version.py` が `manifest.json`・`index.html`・
+`api-key-docs.html`・`sw.js` を一括で揃える。したがってアイコンを差し替えても、ブラウザや
+インストール済みPWAのキャッシュが入れ替わるのは**次のバージョン更新のタイミング**になる。
+
 ### シークレットの取得先
 
 デプロイ・CIが実行時に読むのは**GitHubのsecret / variable**。1Passwordは人が管理する正で、
