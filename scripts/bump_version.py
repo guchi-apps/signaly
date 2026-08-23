@@ -41,7 +41,8 @@ def sync_asset_versions(version: str) -> None:
 
     sw = FRONTEND_DIR / "sw.js"
     text = sw.read_text(encoding="utf-8")
-    text = re.sub(r"icon-192\.png\?v=[0-9.]+", f"icon-192.png?v={version}", text)
+    # icon-192.png 決め打ちだと、通知バッジ用の badge-72.png が取り残される（#173）
+    text = re.sub(r"(\.png)\?v=[0-9.]+", rf"\1?v={version}", text)
     sw.write_text(text, encoding="utf-8")
     print(f"sw.js のアイコン URL を v={version} に更新しました。")
 
