@@ -108,6 +108,27 @@ GitHub secret に Webhook URL として散らばっており、統合のたび�
 `_resolve_webhook_target()` が統合先へ転送する。**Webhook を受ける経路で `_fetch_channels()` を
 直接引かないこと**——別名を解決できず、統合済みのURLが404になる。
 
+**ログイン通知も全アプリ共通の1チャンネルへ集約する（#192）。** CI・デプロイ通知
+（guchi-apps/issue-deck#2255）と同じ形で、Signaly 自身の `LOGIN_WEBHOOK_URL` は
+organization secret `SIGNALY_LOGIN_WEBHOOK_URL`（1Password の正は
+`op://apps/Notify/login-webhook-url`）から取る。`.github/secrets-manifest.tsv` では
+`inherit` で参照する。
+
+**アプリ固有の Webhook URL を共通チャンネルのURLへ差し替えるときは、送信側が
+ペイロードに `source` を入れているか先に確かめること。** 統合（merge）で寄せた場合は
+`channel_aliases.source` が効くため送信側を変えなくてもアプリを区別できるが
+（`backend/main.py` の `source=explicit or parsed.get("source") or alias_source`）、
+共通チャンネルのIDを直接叩くと別名を経由せず、この救済が無くなる。`login_notify.py` は
+`source` を持っているが、他アプリの Next.js テンプレート（`notifySignalyLogin`）は
+Discord 形式の `embeds` だけで `source` も `username` も持たない。**先に `source` を
+足してから差し替えること**——順序を逆にすると、集約した瞬間にどのアプリのログインか
+分からなくなる。
+
+**ログイン通知の集約に Database Webhooks（`/notify/app-login/{app_id}`）を使わないこと。**
+上記のとおり `{app_id}` は表示名にすぎず、Supabase プロジェクトを共有している以上、
+どのアプリへのログインでも同じ Webhook が発火する。集約先が1本になると、この不一致が
+そのまま「全部同じアプリからに見える」という形で表面化する。
+
 **チャンネル統合のテストはモックせず SQLite に通す。** 履歴を `UPDATE` で移し替える不可逆な
 操作なので、戻り値ではなく実際の行を確認する必要がある。`database.py` の engine は import 時に
 接続しないため、`create_engine("sqlite://", poolclass=StaticPool)` を作って
