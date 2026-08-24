@@ -28,7 +28,6 @@ from database import (
     Notification,
     PushSubscription,
     get_session,
-    init_db,
 )
 from login_notify import (
     build_login_notification,
@@ -651,7 +650,9 @@ def _delete_push_subscription(endpoint: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    init_db()
+    # ここで DDL（create_all）を流さないこと。アプリ用の DB ユーザーは CRUD 権限しか
+    # 持たないため、テーブルが増えるたびに起動が `CREATE command denied` で落ちる（#183）。
+    # スキーマの反映はデプロイ時の backend/migrate_db.py が行う。
     auth.set_api_key_resolver(_resolve_api_key_email)
     if push_configured():
         try:
