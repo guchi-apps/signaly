@@ -76,7 +76,7 @@ jobs:
       ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
       APP_URL: ${{ secrets.APP_URL }}
       DB_NAME: ${{ secrets.DB_NAME }}
-      LOGIN_WEBHOOK_URL: ${{ secrets.SIGNALY_LOGIN_WEBHOOK_URL }}
+      LOGIN_WEBHOOK_URL: ${{ secrets.LOGIN_WEBHOOK_URL }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
       TARGET_DIR: ${{ secrets.TARGET_DIR }}
