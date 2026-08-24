@@ -32,7 +32,7 @@ on:
 
 jobs:
   ci-fix:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-ci-fix.yml@workflows/v25
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-ci-fix.yml@workflows/v26
     with:
       runtime-setup: minimal
       package-manager: npm
@@ -41,7 +41,7 @@ jobs:
       issue-number: ${{ inputs.issue_number }}
       # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
       # 古いプロンプトが使われる。
-      prompts-ref: workflows/v25
+      prompts-ref: workflows/v26
     secrets: inherit
     permissions:
       contents: write
