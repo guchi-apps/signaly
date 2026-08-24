@@ -96,6 +96,7 @@
         </button>
         <span id="status" class="status status--disconnected" title="接続状態">●</span>
       </header>
+      <div id="source-filter" class="source-filter" role="group" aria-label="送信元で絞り込み" hidden></div>
       <div id="feed-viewport" class="feed-viewport">
         <div id="feed-sticky-date" class="feed-sticky-date" hidden></div>
         <div id="feed" role="log" aria-live="polite" aria-relevant="additions"></div>
@@ -273,6 +274,17 @@
           <pre class="webhooks-example-code"><code id="channel-settings-webhook-example"></code></pre>
         </div>
 
+        <label class="create-channel-label" for="channel-merge-target">別のチャンネルへ統合</label>
+        <select id="channel-merge-target" class="create-channel-input"></select>
+        <div class="create-channel-webhook-row">
+          <input id="channel-merge-source" class="create-channel-input" type="text" maxlength="100" autocomplete="off" placeholder="送信元名">
+          <button id="channel-merge-btn" type="button" class="create-channel-copy" disabled>統合</button>
+        </div>
+        <p class="create-channel-hint">
+          このチャンネルの通知履歴を統合先へ移し、送信元名を付けて見分けられるようにします。
+          <strong>現在の Webhook URL はそのまま使えます</strong>（統合先へ転送されるため、送信側の設定変更は不要です）。
+        </p>
+
         <div class="channel-settings-actions">
           <button id="channel-settings-select-delete" type="button" class="create-channel-copy channel-delete-btn">通知を選択して削除</button>
           <button id="channel-settings-delete" type="button" class="create-channel-copy channel-delete-btn">チャンネルを削除</button>
@@ -346,6 +358,31 @@
         <div class="confirm-dialog-actions">
           <button id="channel-delete-cancel" type="button" class="create-channel-copy">キャンセル</button>
           <button id="channel-delete-confirm" type="button" class="create-channel-submit confirm-delete-btn">削除する</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="channel-merge-dialog" class="changelog-dialog dialog-centered confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="channel-merge-title" aria-describedby="channel-merge-desc">
+    <div class="changelog-panel create-channel-panel confirm-dialog-panel">
+      <div class="confirm-dialog-icon" aria-hidden="true">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <h2 class="confirm-dialog-title" id="channel-merge-title">チャンネルを統合しますか？</h2>
+      <div class="create-channel-body confirm-dialog-body">
+        <p class="confirm-dialog-message" id="channel-merge-desc">
+          <strong id="channel-merge-origin-name"></strong> の通知履歴を <strong id="channel-merge-target-name"></strong> へ移し、
+          送信元 <strong id="channel-merge-label-name"></strong> を付けます。
+        </p>
+        <p class="create-channel-hint">この操作は元に戻せません。統合元の Webhook URL は統合先へ転送されます。</p>
+        <p id="channel-merge-error" class="create-channel-error" hidden></p>
+        <div class="confirm-dialog-actions">
+          <button id="channel-merge-cancel" type="button" class="create-channel-copy">キャンセル</button>
+          <button id="channel-merge-confirm" type="button" class="create-channel-submit">統合する</button>
         </div>
       </div>
     </div>

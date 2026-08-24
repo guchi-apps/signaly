@@ -186,16 +186,21 @@ def _plain_text(text: str) -> str:
 
 
 def _notification_body(entry: Dict[str, Any]) -> str:
+    # チャンネルを用途別に統合すると、通知だけではどのアプリ由来か分からなくなる。
+    # 本文の先頭に送信元を出して、ロック画面のままでも見分けられるようにする。
+    prefix = _plain_text(str(entry.get("source") or "")).strip()
     fields = entry.get("fields") or []
     if fields:
         parts = [
             f"{_plain_text(str(f.get('name', '')))}: {_plain_text(str(f.get('value', '')))}"
             for f in fields
         ]
-        return "\n".join(parts)
-    if entry.get("message"):
-        return _plain_text(entry["message"])
-    return ""
+        body = "\n".join(parts)
+    else:
+        body = _plain_text(entry["message"]) if entry.get("message") else ""
+    if not prefix:
+        return body
+    return f"{prefix}\n{body}" if body else prefix
 
 
 def _build_payload(entry: Dict[str, Any]) -> str:

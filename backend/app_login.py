@@ -210,6 +210,9 @@ def parse_app_login_payload(app_id: str, payload: Dict[str, Any]) -> Optional[di
         "level": "info",
         "color": color,
         "fields": fields or None,
+        # URL パスの app_id はアプリを一意に表すので、そのまま送信元にする。
+        # ログイン通知を1本のチャンネルへ統合しても、どのアプリのログインかを絞り込める。
+        "source": app_id,
     }
 
 

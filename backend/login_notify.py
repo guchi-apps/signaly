@@ -88,6 +88,8 @@ def build_login_notification(
         "level": "info",
         "color": "#57f287",
         "fields": fields,
+        # ログイン通知を他アプリと同じチャンネルへ集約しても見分けられるようにする
+        "source": APP_NAME,
     }
 
 

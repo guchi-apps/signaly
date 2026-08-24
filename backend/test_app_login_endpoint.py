@@ -5,7 +5,7 @@ app_login.py の単体テスト（test_app_login.py）では見られない結�
 - 401 / 400 / 200(skipped) の分岐
 - 通知として実際に組み上がった内容（機密が混ざらないこと）
 
-DB と Web Push には触らせない（_fetch_channels / _save_notification /
+DB と Web Push には触らせない（_resolve_webhook_target / _save_notification /
 send_push_notifications を差し替える）。それ以外は本物のコードを通す。
 """
 
@@ -45,7 +45,11 @@ class AppLoginEndpointTest(unittest.TestCase):
     def setUp(self):
         self.saved = []
         patches = [
-            patch.object(main, "_fetch_channels", lambda: {CHANNEL_ID: CHANNEL_NAME}),
+            patch.object(
+                main,
+                "_resolve_webhook_target",
+                lambda cid: (CHANNEL_NAME, None) if cid == CHANNEL_ID else None,
+            ),
             patch.object(main, "_save_notification", self.saved.append),
             patch.object(main, "send_push_notifications", lambda entry: None),
         ]

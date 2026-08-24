@@ -39,7 +39,7 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 エンドポイントを直接叩ける。DB に触る3つの関数だけ差し替えればよい。
 
 ```python
-patch.object(main, "_fetch_channels", lambda: {"<channel_id>": "<channel_name>"})
+patch.object(main, "_resolve_webhook_target", lambda cid: ("<channel_name>", None))
 patch.object(main, "_save_notification", saved.append)
 patch.object(main, "send_push_notifications", lambda entry: None)
 ```
@@ -88,6 +88,36 @@ Webhook は他アプリのログインでも発火する。`{app_id}` は設定�
 `POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py` から送る
 （この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
 付けないこと**——ログインしていないのに通知が飛ぶ）。
+
+### 通知チャンネルと送信元（source）
+
+**チャンネルは「用途」で1本、アプリの区別は `notifications.source` で行う。** アプリごとに
+CI・ログインのチャンネルを作ると、アプリ数×用途ぶんチャンネルが増える（#177 の時点で20本近く）。
+送信元は受信時に自動判定するので、**送信側（各リポジトリのワークフロー・1Password・GitHub
+secret）を変えずに済む**。判定の優先順は `X-Signaly-Source` ヘッダー → `?source=` クエリ →
+ペイロードの `source` → `fields` の `App` / `Repository` → Discord 形式の `username`
+（`backend/webhook.py`）。`/notify/app-login/{app_id}` は `app_id` がそのまま送信元になる。
+
+**HTTP ヘッダーは ASCII しか運べない。** 日本語の送信元名を渡したいときに
+`X-Signaly-Source` を使うと文字化けする。`?source=`（URLエンコード）かペイロードの
+`source` キーを使うこと。
+
+**統合しても旧チャンネルIDの Webhook URL は生かす。** チャンネルIDは各リポジトリの1Password /
+GitHub secret に Webhook URL として散らばっており、統合のたびに全リポジトリを書き換えるのは
+現実的でない。`POST /api/channels/{id}/merge` は旧IDを `channel_aliases` に残し、
+`_resolve_webhook_target()` が統合先へ転送する。**Webhook を受ける経路で `_fetch_channels()` を
+直接引かないこと**——別名を解決できず、統合済みのURLが404になる。
+
+**チャンネル統合のテストはモックせず SQLite に通す。** 履歴を `UPDATE` で移し替える不可逆な
+操作なので、戻り値ではなく実際の行を確認する必要がある。`database.py` の engine は import 時に
+接続しないため、`create_engine("sqlite://", poolclass=StaticPool)` を作って
+`main.get_session` / `notification_prefs.get_session` を差し替えれば MySQL 無しで動く
+（実例は `backend/test_channel_merge.py`）。**`StaticPool` を省くと接続ごとに空のDBが作られ、
+`no such table` で落ちる。**
+
+**`create_all()` は既存テーブルにインデックスを張らない。** 後から足した列
+（`notifications.source`）のインデックスは `_migrate_add_columns()` の中で
+`CREATE INDEX` を try/except で流す必要がある。
 
 ### バージョン管理
 

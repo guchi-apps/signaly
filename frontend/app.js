@@ -95,6 +95,9 @@ const UNREAD_KEY = 'signaly-unread'
 const PUSH_DISABLED_KEY = 'signaly-push-disabled'
 const CHANNEL_TREE_KEY = 'signaly-channel-tree'
 const COLLAPSED_GROUPS_KEY = 'signaly-collapsed-groups'
+const SOURCE_FILTER_KEY = 'signaly-source-filter'
+// 送信元が未設定の通知を指す擬似的な名前（backend/main.py の SOURCE_NONE と揃える）
+const SOURCE_NONE = '-'
 const UNGROUPED_SECTION_ID = '__ungrouped__'
 const UNREAD_POLL_MS = 15000
 const NEW_CARD_FADE_MS = 60000
@@ -122,6 +125,9 @@ let feedOldestId = null
 let feedHasMore = false
 let feedLoadingMore = false
 let feedLoadMoreEl = null
+let sourceFilters = loadSourceFilters()  // channel_name -> 選択中の送信元（null = すべて）
+let activeSource = null
+let channelSources = []
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
 
@@ -139,6 +145,7 @@ const toastMessageEl = document.getElementById('toast-message')
 const toastCloseBtn = document.getElementById('toast-close')
 const channelTitle = document.getElementById('channel-title')
 const channelSettingsHeaderBtn = document.getElementById('channel-settings-header-btn')
+const sourceFilterEl = document.getElementById('source-filter')
 const notificationsBtn = document.getElementById('notifications-btn')
 const notificationsBadge = document.getElementById('notifications-badge')
 const statusEl = document.getElementById('status')
@@ -507,6 +514,135 @@ function saveCollapsedGroups() {
   }
 }
 
+// ── 送信元フィルタ ────────────────────────────────────────────────────────────
+// チャンネルを用途別に統合すると1本の中に複数アプリの通知が混ざる。
+// どの送信元を見ているかは端末ごとの好みなので、サーバーではなく localStorage に持つ。
+
+function loadSourceFilters() {
+  try {
+    const raw = localStorage.getItem(SOURCE_FILTER_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveSourceFilters() {
+  try {
+    localStorage.setItem(SOURCE_FILTER_KEY, JSON.stringify(sourceFilters))
+  } catch {
+    // quota exceeded 等は無視
+  }
+}
+
+function setSourceFilter(channelName, source) {
+  if (source) sourceFilters[channelName] = source
+  else delete sourceFilters[channelName]
+  saveSourceFilters()
+}
+
+function sourceLabel(name) {
+  return name === SOURCE_NONE ? '送信元なし' : name
+}
+
+function renderSourceFilter() {
+  if (!sourceFilterEl) return
+  sourceFilterEl.innerHTML = ''
+
+  // 送信元が1種類しか無いチャンネルでは絞り込む相手がいないので出さない
+  if (channelSources.length < 2) {
+    sourceFilterEl.hidden = true
+    return
+  }
+  sourceFilterEl.hidden = false
+
+  const total = channelSources.reduce((sum, item) => sum + item.count, 0)
+  const chips = [{ name: null, label: 'すべて', count: total }].concat(
+    channelSources.map((item) => ({
+      name: item.name,
+      label: sourceLabel(item.name),
+      count: item.count,
+    })),
+  )
+
+  for (const chip of chips) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'source-chip'
+    btn.setAttribute('aria-pressed', String(chip.name === activeSource))
+    btn.textContent = chip.label
+
+    const count = document.createElement('span')
+    count.className = 'source-chip-count'
+    count.textContent = String(chip.count)
+    btn.appendChild(count)
+
+    btn.addEventListener('click', () => applySourceFilter(chip.name))
+    sourceFilterEl.appendChild(btn)
+  }
+}
+
+async function refreshChannelSources(channelName) {
+  const channel = channelsByName[channelName]
+  if (!channel) {
+    channelSources = []
+    renderSourceFilter()
+    return
+  }
+  try {
+    const res = await fetch(apiUrl(`api/channels/${channel.id}/sources`))
+    if (!res.ok || activeChannel !== channelName) return
+    const data = await res.json()
+    channelSources = Array.isArray(data.sources) ? data.sources : []
+  } catch {
+    channelSources = []
+  }
+  if (activeChannel !== channelName) return
+  // 保存済みの絞り込み先が消えている場合（統合・削除の後）は「すべて」へ戻す
+  if (activeSource && !channelSources.some((item) => item.name === activeSource)) {
+    activeSource = null
+    setSourceFilter(channelName, null)
+  }
+  renderSourceFilter()
+}
+
+async function reloadActiveFeed() {
+  if (!activeChannel) return
+  const channelName = activeChannel
+  exitNotifSelectMode()
+  feed.innerHTML = ''
+  if (feedStickyDate) feedStickyDate.hidden = true
+  if (emptyState) emptyState.hidden = true
+  seenIds.clear()
+  await loadHistory(channelName, lastReadAt[channelName], 0)
+}
+
+async function applySourceFilter(source) {
+  if (!activeChannel || activeSource === source) return
+  activeSource = source
+  setSourceFilter(activeChannel, source)
+  renderSourceFilter()
+  await reloadActiveFeed()
+}
+
+function matchesSourceFilter(entry) {
+  if (!activeSource) return true
+  return (entry.source || SOURCE_NONE) === activeSource
+}
+
+// 新着1件ごとにサーバーへ数え直しに行くとリクエストが増えるので、
+// 既知の送信元は手元で加算し、初めて見る送信元のときだけ取り直す。
+function noteIncomingSource(entry) {
+  const name = entry.source || SOURCE_NONE
+  const known = channelSources.find((item) => item.name === name)
+  if (known) {
+    known.count += 1
+    renderSourceFilter()
+    return
+  }
+  void refreshChannelSources(entry.channel)
+}
+
 function toggleGroupCollapsed(groupId) {
   if (collapsedGroups.has(groupId)) {
     collapsedGroups.delete(groupId)
@@ -821,6 +957,14 @@ function createCard(entry, { isNew = false } = {}) {
 
   header.appendChild(title)
 
+  if (entry.source) {
+    const source = document.createElement('span')
+    source.className = 'notif-source'
+    source.textContent = entry.source
+    source.title = `送信元: ${entry.source}`
+    header.appendChild(source)
+  }
+
   if (isNew) {
     const badge = document.createElement('span')
     badge.className = 'notif-new-badge'
@@ -1004,7 +1148,10 @@ function createResultRow(entry, onSelect, { deletable = false } = {}) {
 
   const channelEl = document.createElement('span')
   channelEl.className = 'search-result-channel'
-  channelEl.textContent = `#${entry.channel}`
+  // 統合したチャンネルではチャンネル名だけでは発信元が分からないので送信元を添える
+  channelEl.textContent = entry.source
+    ? `#${entry.channel} · ${entry.source}`
+    : `#${entry.channel}`
 
   const timeEl = document.createElement('span')
   timeEl.className = 'search-result-time'
@@ -1576,6 +1723,9 @@ function renderChannelTree(data, selectName = null, options = {}) {
     activeChannel = null
     channelTitle.textContent = 'チャンネルを選択'
     if (channelSettingsHeaderBtn) channelSettingsHeaderBtn.hidden = true
+    channelSources = []
+    activeSource = null
+    renderSourceFilter()
     hideFeedState()
     exitNotifSelectMode()
     return
@@ -1779,6 +1929,9 @@ async function selectChannel(name) {
   // UI 更新
   setActiveChannelRow(name)
   updateAllBadges()
+  activeSource = sourceFilters[name] || null
+  channelSources = []
+  renderSourceFilter()
   channelTitle.textContent = `# ${name}`
   if (channelSettingsHeaderBtn) channelSettingsHeaderBtn.hidden = false
   feed.innerHTML = ''
@@ -1791,6 +1944,7 @@ async function selectChannel(name) {
   // SSE を先に張り、履歴読み込み中の通知取りこぼしを防ぐ
   void connectSSE(name)
   await loadHistory(name, sinceLastRead, pendingUnread)
+  void refreshChannelSources(name)
 
   closeSidebar()
 }
@@ -1802,7 +1956,10 @@ async function loadHistory(channelName, sinceLastRead, pendingUnread = 0) {
   feedHasMore = false
   feedLoadMoreEl = null
   try {
-    const res = await authFetch(apiUrl(`api/history/${channelName}`))
+    const params = new URLSearchParams()
+    if (activeSource) params.set('source', activeSource)
+    const query = params.toString()
+    const res = await authFetch(apiUrl(`api/history/${channelName}${query ? `?${query}` : ''}`))
     if (activeChannel !== channelName) return
     if (!res.ok) {
       showFeedError(
@@ -1888,6 +2045,7 @@ async function loadMoreHistory(channelName, wrap, btn) {
     const params = new URLSearchParams()
     if (feedOldestTimestamp) params.set('before_timestamp', feedOldestTimestamp)
     if (feedOldestId) params.set('before_id', feedOldestId)
+    if (activeSource) params.set('source', activeSource)
     const res = await authFetch(apiUrl(`api/history/${channelName}?${params.toString()}`))
     if (activeChannel !== channelName) return
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -2014,7 +2172,9 @@ async function pollUnreadChannels() {
 async function pollNewEntries(channelName) {
   if (activeChannel !== channelName) return
   try {
-    const res = await authFetch(apiUrl(`api/history/${channelName}?limit=30`))
+    const pollParams = new URLSearchParams({ limit: '30' })
+    if (activeSource) pollParams.set('source', activeSource)
+    const res = await authFetch(apiUrl(`api/history/${channelName}?${pollParams.toString()}`))
     if (!res.ok) return
     const { logs } = await res.json()
     const fresh = logs.filter(e => !seenIds.has(e.id) && activeChannel === e.channel)
@@ -2022,6 +2182,7 @@ async function pollNewEntries(channelName) {
     // prepend は先頭挿入なので古い順に処理して最新が上に来るようにする
     for (const entry of [...fresh].reverse()) {
       prependCard(entry, { isNew: true })
+      noteIncomingSource(entry)
       added = true
     }
     if (added) feed.scrollTop = 0
@@ -2069,8 +2230,11 @@ async function connectSSE(channelName) {
     }
 
     if (activeChannel === entry.channel) {
-      prependCard(entry, { isNew: true })
+      if (matchesSourceFilter(entry)) {
+        prependCard(entry, { isNew: true })
+      }
       markChannelRead(entry.channel, parseTimestamp(entry.timestamp))
+      noteIncomingSource(entry)
     } else {
       setChannelUnread(entry.channel, (unread[entry.channel] || 0) + 1)
       updateBadge(entry.channel)
@@ -3116,6 +3280,16 @@ const channelSettingsWebhookExample = document.getElementById('channel-settings-
 const channelSettingsDelete = document.getElementById('channel-settings-delete')
 const channelSettingsSelectDelete = document.getElementById('channel-settings-select-delete')
 const channelSettingsNotifSegment = document.getElementById('channel-settings-notif-segment')
+const channelMergeTarget = document.getElementById('channel-merge-target')
+const channelMergeSource = document.getElementById('channel-merge-source')
+const channelMergeBtn = document.getElementById('channel-merge-btn')
+const channelMergeDialog = document.getElementById('channel-merge-dialog')
+const channelMergeOriginName = document.getElementById('channel-merge-origin-name')
+const channelMergeTargetName = document.getElementById('channel-merge-target-name')
+const channelMergeLabelName = document.getElementById('channel-merge-label-name')
+const channelMergeError = document.getElementById('channel-merge-error')
+const channelMergeCancel = document.getElementById('channel-merge-cancel')
+const channelMergeConfirm = document.getElementById('channel-merge-confirm')
 const channelDeleteDialog = document.getElementById('channel-delete-dialog')
 const channelDeleteName = document.getElementById('channel-delete-name')
 const channelDeleteError = document.getElementById('channel-delete-error')
@@ -3148,6 +3322,38 @@ function resetChannelSettingsDialog() {
   channelSettingsDelete.disabled = false
   channelSettingsSelectDelete.disabled = false
   setNotifSegmentDisabled(channelSettingsNotifSegment, false)
+  if (channelMergeTarget) channelMergeTarget.innerHTML = ''
+  if (channelMergeSource) channelMergeSource.value = ''
+  if (channelMergeBtn) channelMergeBtn.disabled = true
+}
+
+// 統合先の候補（自分以外の全チャンネル）を並べる。
+// 候補が無い＝チャンネルが1本しか無いときは、押しても何も起きないので無効のままにする。
+function populateMergeTargets(channelName) {
+  if (!channelMergeTarget) return
+  channelMergeTarget.innerHTML = ''
+  const others = Object.keys(channelsByName)
+    .filter((name) => name !== channelName)
+    .sort((a, b) => a.localeCompare(b, 'ja'))
+
+  if (!others.length) {
+    const option = document.createElement('option')
+    option.textContent = '統合できるチャンネルがありません'
+    option.value = ''
+    channelMergeTarget.appendChild(option)
+    channelMergeTarget.disabled = true
+    if (channelMergeBtn) channelMergeBtn.disabled = true
+    return
+  }
+
+  channelMergeTarget.disabled = false
+  for (const name of others) {
+    const option = document.createElement('option')
+    option.value = channelsByName[name].id
+    option.textContent = `# ${name}`
+    channelMergeTarget.appendChild(option)
+  }
+  if (channelMergeBtn) channelMergeBtn.disabled = false
 }
 
 function openChannelSettings(channelName) {
@@ -3166,6 +3372,8 @@ function openChannelSettings(channelName) {
   }
   channelSettingsError.hidden = true
   hideWebhookSection(channelSettingsRevealWebhook, channelSettingsWebhookSection, channelSettingsCopy, 'URL をコピー')
+  populateMergeTargets(channelName)
+  if (channelMergeSource) channelMergeSource.value = channelName
   closeSidebar()
   SignalyDialog.open(channelSettingsDialog)
 }
@@ -3181,6 +3389,7 @@ channelSettingsDialog?.addEventListener('click', (e) => {
   if (
     e.target === channelSettingsDialog
     && !channelDeleteDialog?.classList.contains('open')
+    && !channelMergeDialog?.classList.contains('open')
   ) {
     closeChannelSettingsDialog()
   }
@@ -3334,6 +3543,107 @@ channelSettingsRenameBtn?.addEventListener('click', async () => {
 channelSettingsDelete?.addEventListener('click', () => {
   if (!channelSettingsId || !channelSettingsOriginalName) return
   openChannelDeleteDialog()
+})
+
+// ── チャンネルの統合 ──────────────────────────────────────────────────────────
+
+function mergeTargetName() {
+  const id = channelMergeTarget?.value
+  if (!id) return null
+  const entry = Object.entries(channelsByName).find(([, channel]) => channel.id === id)
+  return entry ? entry[0] : null
+}
+
+function openChannelMergeDialog() {
+  const targetName = mergeTargetName()
+  if (!channelSettingsOriginalName || !targetName) return
+  channelMergeOriginName.textContent = `# ${channelSettingsOriginalName}`
+  channelMergeTargetName.textContent = `# ${targetName}`
+  channelMergeLabelName.textContent =
+    channelMergeSource.value.trim() || channelSettingsOriginalName
+  channelMergeError.hidden = true
+  channelMergeError.textContent = ''
+  channelMergeConfirm.disabled = false
+  channelMergeCancel.disabled = false
+  SignalyDialog.open(channelMergeDialog, { focusEl: channelMergeCancel })
+}
+
+function closeChannelMergeDialog() {
+  SignalyDialog.close(channelMergeDialog)
+  channelMergeError.hidden = true
+  channelMergeError.textContent = ''
+  channelMergeConfirm.disabled = false
+  channelMergeCancel.disabled = false
+}
+
+channelMergeBtn?.addEventListener('click', openChannelMergeDialog)
+channelMergeCancel?.addEventListener('click', closeChannelMergeDialog)
+
+channelMergeDialog?.addEventListener('click', (e) => {
+  if (e.target === channelMergeDialog) closeChannelMergeDialog()
+})
+
+channelMergeConfirm?.addEventListener('click', () => {
+  const targetId = channelMergeTarget?.value
+  const targetName = mergeTargetName()
+  if (!channelSettingsId || !channelSettingsOriginalName || !targetId || !targetName) return
+
+  runConfirmAction({
+    confirmBtn: channelMergeConfirm,
+    cancelBtn: channelMergeCancel,
+    errorEl: channelMergeError,
+    extraButtons: [channelMergeBtn, channelSettingsDelete, channelSettingsRenameBtn],
+    run: async (showError) => {
+      const source = channelMergeSource.value.trim()
+      const res = await fetch(apiUrl(`api/channels/${channelSettingsId}/merge`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_channel_id: targetId, source: source || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        showError(parseApiError(data, '統合に失敗しました'))
+        return
+      }
+
+      // 統合元のチャンネルは消えるので、端末側に残る記録も片付ける。
+      // 既読位置は統合先のものを残す（統合元のほうが古いと、統合先の既読分まで
+      // 新着として出し直してしまうため）。
+      const originName = channelSettingsOriginalName
+      if (unread[originName]) {
+        setChannelUnread(targetName, (unread[targetName] || 0) + unread[originName])
+        delete unread[originName]
+        saveUnread()
+      }
+      delete lastReadAt[originName]
+      saveLastReadAt()
+      setSourceFilter(originName, null)
+
+      const wasOrigin = activeChannel === originName
+      const wasTarget = activeChannel === targetName
+      if (wasOrigin && eventSource) {
+        eventSource.close()
+        eventSource = null
+      }
+      closeChannelMergeDialog()
+      closeChannelSettingsDialog()
+      showToast(`# ${originName} を # ${targetName} へ統合しました（${data.moved}件）`)
+
+      if (wasOrigin) {
+        // 統合先へ切り替える（selectChannel は同じ名前だと何もしないため一度外す）
+        activeChannel = null
+        await refreshChannels(targetName)
+        return
+      }
+
+      await refreshChannels(activeChannel)
+      if (wasTarget) {
+        // 表示中のチャンネルへ履歴が増えたので読み直す
+        await reloadActiveFeed()
+        await refreshChannelSources(targetName)
+      }
+    },
+  })
 })
 
 channelDeleteCancel?.addEventListener('click', closeChannelDeleteDialog)
