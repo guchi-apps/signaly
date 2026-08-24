@@ -130,12 +130,12 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
 | `APP_URL` | ベース URL |
 | `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
-| `LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない） |
+| `LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない）。全アプリ共通のログインチャンネル |
 | `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Named Tunnel（開発用） |
 
-本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（Supabase / SECRET_KEY / VAPID 含む）。`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` は他アプリと共通のため organization の variable（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取ります。ローカル開発は `.env.local`（1Password 不要）を使い、開発用 Supabase プロジェクトを参照します。
+本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（Supabase / SECRET_KEY / VAPID 含む）。`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` は他アプリと共通のため organization の variable（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取ります。CI / デプロイ通知の `SIGNALY_WEBHOOK_URL` も、全リポジトリで1つのチャンネルへ集約したため organization の secret から取ります。ローカル開発は `.env.local`（1Password 不要）を使い、開発用 Supabase プロジェクトを参照します。
 
 ## Webhook
 
@@ -147,12 +147,14 @@ POST https://<your-host>/webhook/<channel_id>
 
 Webhook URL はログイン後の **Webhook URL** 画面で確認できます。
 
-Supabase Auth へ移行したアプリのログイン通知は、Supabase の Database Webhooks を直接受ける専用の受け口を使います（アプリ側のコード変更は不要）。詳細は [docs/webhook.md](./docs/webhook.md#アプリのログイン通知supabase-database-webhooks) を参照してください。
+Supabase の Database Webhooks を直接受ける受け口もあります（アプリ側のコード変更が不要な代わりに、どのアプリへのログインかを区別できません）。**新規には採用しません**——現在使っているのは ops-dashboard だけです。詳細は [docs/webhook.md](./docs/webhook.md#アプリのログイン通知supabase-database-webhooks) を参照してください。
 
 ```
 POST https://<your-host>/notify/app-login/<app_id>
 X-Signaly-Token: <channel_id>
 ```
+
+OAuth のコールバックを Supabase がホストしていて通知を差し込む場所が無いアプリは、Signaly 自身と同じく**フロントエンドの認証コールバックから自分のバックエンドを叩き、そこから `source` 付きで共通チャンネルへ送る**形を取ります（`frontend/auth/callback.html` → `POST /auth/session` → `backend/login_notify.py`）。
 
 ## チャンネルの共通化
 
@@ -165,10 +167,18 @@ X-Signaly-Token: <channel_id>
    統合先へ移り、送信元名が付きます。**統合元の Webhook URL はそのまま使える**ため、各リポジトリの
    1Password / GitHub secret を書き換える必要はありません
 2. **新しく共通チャンネルを作る** — 各リポジトリの `ci-webhook-url` / `login-webhook-url` を
-   共通チャンネルの URL へ差し替える（1Password を更新して `scripts/sync-github-secrets.sh` で同期）
+   共通チャンネルの URL へ差し替える（1Password を更新して `scripts/sync-github-secrets.sh` で同期）。
+   organization の共通シークレットへ寄せる場合もこちらです
 
-送信元は送信側が何も指定しなくても、CI 通知は `App` フィールドから、アプリのログイン通知は URL の
-`app_id` から自動で付きます。明示したい場合は `X-Signaly-Source` ヘッダー・`?source=` クエリ・
+**2 を選ぶときは、送信側がペイロードに `source` を入れているか先に確かめてください。** 1 の統合では
+統合元チャンネルの別名に送信元名が残るため送信側を変えなくても見分けられますが、共通チャンネルの
+URL を直接叩くとその別名を経由しません。`source` も `App` フィールドも `username` も持たない
+ペイロード（アプリのログイン通知に多い）は、差し替えた瞬間に送信元が付かなくなります。
+
+送信元は送信側が何も指定しなくても、CI 通知は `App` フィールドから自動で付きます（`.github/scripts/signaly-notify.sh`
+がこのフィールドを必ず載せています）。**ログイン通知は送信側で `source` を明示してください**——`/notify/app-login/<app_id>`
+の `app_id` も送信元になりますが、Supabase プロジェクトを共有している以上、実際にログインされたアプリとは
+一致しません。明示する場合は `X-Signaly-Source` ヘッダー・`?source=` クエリ・
 ペイロードの `source` キーが使えます。詳細は [docs/webhook.md](./docs/webhook.md#送信元source) を参照してください。
 
 ## デプロイ
@@ -212,16 +222,16 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 |---------|-----------|------|
 | `signaly` | `app-url` | `https://signaly.gucchii.com/` |
 | `signaly` | `allowed-emails` / `secret-key` | ログイン許可・SSE 用 Cookie の署名 |
-| `signaly` | `login-webhook-url` | ログイン通知（Signaly Webhook URL 全文） |
+| `signaly` | `login-webhook-url` | ログイン通知（Signaly Webhook URL 全文。通知先は全アプリ共通のチャンネル） |
 | `Supabase` | `project-url` / `publishable-key` | Supabase Auth（全アプリ共通。GitHub 側は organization の variable） |
 | `signaly` | `vapid-*` | Web Push |
 | `signaly` | `target-dir` / `db-name` | デプロイ先・DB 名 |
 | `DB` | `db-user` 等 | MySQL 共通接続情報 |
 | `Server` | `host` / `username` / `ssh-port` | SSH 接続 |
 | `githubaction-sshkey` | `private_key` | GitHub Actions 用 SSH 秘密鍵 |
-| `signaly` | `ci-webhook-url` | CI / デプロイ通知（Signaly Webhook URL 全文） |
+| `Notify` | `ci-webhook-url` | CI / デプロイ通知（全アプリ共通。GitHub 側は organization の `SIGNALY_WEBHOOK_URL`） |
 
-`ci-webhook-url` / `login-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST します。
+`ci-webhook-url` / `login-webhook-url` は Signaly 上の **Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）です。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST し、**どちらも通知先は全アプリ共通のチャンネル**で、送信元（アプリ名）で見分けます。CI 側は集約済みで値を organization の `SIGNALY_WEBHOOK_URL` に1つだけ持ちます（`Notify` アイテム）。ログイン側も同じ形へ寄せる予定です（guchi-apps/issue-deck#2286）。
 
 **Signaly 自身のログイン通知に `/notify/app-login/*` は使えません。** Supabase プロジェクトは複数アプリで共有しており、`auth.users` に掛けた Database Webhook は他アプリのログインでも発火するため、どのアプリへのログインかを区別できないためです（`{app_id}` は表示名にすぎません）。
 
