@@ -47,6 +47,27 @@ class Channel(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
+class ChannelAlias(Base):
+    """統合で消えたチャンネルIDを、統合先チャンネルへ転送するための別名。
+
+    チャンネルを別チャンネルへ統合すると旧チャンネルの行は消えるが、旧チャンネルIDは
+    各リポジトリの1Password / GitHub secret に Webhook URL として散らばっている。
+    ここへ旧IDを残すことで `/webhook/{旧ID}` が統合先へ届き続け、送信側の差し替えが要らない。
+    """
+
+    __tablename__ = "channel_aliases"
+
+    id = Column(String(36), primary_key=True)  # 旧チャンネルID（＝Webhook URL のパス）
+    channel_id = Column(
+        String(36),
+        ForeignKey("channels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source = Column(String(100), nullable=True)  # このIDで届いた通知に付ける送信元名
+    created_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class ApiKey(Base):
     __tablename__ = "api_keys"
 
@@ -70,6 +91,9 @@ class Notification(Base):
     timestamp = Column(DateTime(timezone=True), nullable=False)
     fields = Column(Text, nullable=True)   # JSON array [{name, value, inline}]
     color = Column(String(20), nullable=True)  # CSS hex color e.g. #57f287
+    # 送信元（アプリ名・リポジトリ名など）。用途別に統合したチャンネルの中で発信元を見分ける。
+    # 過去の行は NULL のままなので、参照側は必ず未設定を許容すること。
+    source = Column(String(100), nullable=True, index=True)
 
 
 class NotificationSetting(Base):
@@ -103,6 +127,7 @@ def _migrate_add_columns() -> None:
     notification_columns = [
         "fields TEXT NULL",
         "color VARCHAR(20) NULL",
+        "source VARCHAR(100) NULL",
     ]
     channel_columns = [
         "webhook_secret_hash VARCHAR(64) NULL",
@@ -123,6 +148,13 @@ def _migrate_add_columns() -> None:
                 conn.commit()
             except Exception:
                 pass  # column already exists
+        # create_all はテーブルを新規に作るときしかインデックスを張らない。
+        # 既存の notifications へ後から足した列には、ここで明示的に張る。
+        try:
+            conn.execute(text("CREATE INDEX ix_notifications_source ON notifications (source)"))
+            conn.commit()
+        except Exception:
+            pass  # index already exists
 
 
 def init_db() -> None:

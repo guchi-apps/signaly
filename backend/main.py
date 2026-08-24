@@ -4,26 +4,37 @@ import hashlib
 import logging
 import os
 import secrets
-import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from itsdangerous import BadData
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, func, or_
 
 import app_login
 import auth
-from database import ApiKey, Channel, ChannelGroup, Notification, PushSubscription, get_session, init_db
-from login_notify import build_login_notification, send_login_notification
+import supabase_auth
+from database import (
+    ApiKey,
+    Channel,
+    ChannelAlias,
+    ChannelGroup,
+    Notification,
+    PushSubscription,
+    get_session,
+    init_db,
+)
+from login_notify import (
+    build_login_notification,
+    send_login_notification,
+    user_info_from_claims,
+)
 from notification_prefs import (
     delete_settings_for_target,
     get_notification_settings,
@@ -38,7 +49,7 @@ from push import (
     send_test_push_to_user,
     validate_push_config,
 )
-from webhook import parse_webhook_payload
+from webhook import SOURCE_HEADER, normalize_source, parse_webhook_payload
 
 BASE_DIR = Path(__file__).parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
@@ -58,6 +69,27 @@ def _fetch_channels() -> Dict[str, str]:
     with get_session() as session:
         rows = session.query(Channel).all()
         return {row.id: row.name for row in rows}
+
+
+def _resolve_webhook_target(channel_id: str) -> Optional[tuple[str, Optional[str]]]:
+    """Webhook の宛先IDから (チャンネル名, 別名に紐づく送信元) を解決する。
+
+    統合で消えたチャンネルIDは channel_aliases に残しており、送信側の Webhook URL を
+    差し替えなくても統合先へ届く。見つからなければ None。
+    """
+    with get_session() as session:
+        row = session.query(Channel).filter(Channel.id == channel_id).first()
+        if row:
+            return row.name, None
+        alias = (
+            session.query(ChannelAlias, Channel)
+            .join(Channel, Channel.id == ChannelAlias.channel_id)
+            .filter(ChannelAlias.id == channel_id)
+            .first()
+        )
+        if alias:
+            return alias[1].name, alias[0].source
+    return None
 
 
 def _webhook_url(request: Request, channel_id: str) -> str:
@@ -355,7 +387,11 @@ def _broadcast(channel_name: str, event: str, data: dict) -> None:
             _subscribers[channel_name].remove(q)
 
 
-async def _dispatch_notification(channel_name: str, parsed: dict) -> dict:
+async def _dispatch_notification(
+    channel_name: str,
+    parsed: dict,
+    source: Optional[str] = None,
+) -> dict:
     entry = {
         "id": str(uuid.uuid4()),
         "channel": channel_name,
@@ -364,6 +400,8 @@ async def _dispatch_notification(channel_name: str, parsed: dict) -> dict:
         "level": parsed["level"],
         "color": parsed["color"],
         "fields": parsed["fields"],
+        # 送信元は「リクエストで明示された値 → ペイロードから判定した値」の順で決める
+        "source": normalize_source(source) or normalize_source(parsed.get("source")),
         "timestamp": _utc_iso(datetime.now(timezone.utc)),
     }
 
@@ -372,6 +410,61 @@ async def _dispatch_notification(channel_name: str, parsed: dict) -> dict:
 
     asyncio.create_task(asyncio.to_thread(send_push_notifications, entry))
     return entry
+
+
+def _merge_channel(channel_id: str, target_id: str, source: Optional[str]) -> dict:
+    """チャンネルを別のチャンネルへ統合する。
+
+    通知履歴を統合先へ移し、送信元が未設定のものだけ `source` で埋める。
+    旧チャンネルIDは channel_aliases に残すので、送信側の Webhook URL は差し替え不要。
+    """
+    if channel_id == target_id:
+        raise ValueError("same_channel")
+
+    now = datetime.now(timezone.utc)
+    with get_session() as session:
+        origin = session.query(Channel).filter(Channel.id == channel_id).first()
+        target = session.query(Channel).filter(Channel.id == target_id).first()
+        if not origin or not target:
+            raise LookupError("channel_not_found")
+
+        origin_name = origin.name
+        target_name = target.name
+        label = normalize_source(source) or origin_name
+
+        moved = (
+            session.query(Notification)
+            .filter(Notification.channel == origin_name)
+            .update(
+                {
+                    Notification.channel: target_name,
+                    Notification.source: func.coalesce(Notification.source, label),
+                },
+                synchronize_session=False,
+            )
+        )
+
+        # 旧チャンネルが既に他チャンネルの統合先だった場合、その別名も統合先へ付け替える
+        session.query(ChannelAlias).filter(ChannelAlias.channel_id == origin.id).update(
+            {ChannelAlias.channel_id: target.id}, synchronize_session=False
+        )
+        session.add(
+            ChannelAlias(id=origin.id, channel_id=target.id, source=label, created_at=now)
+        )
+        session.delete(origin)
+        session.commit()
+
+    # 旧チャンネルに対する通知オン/オフ設定は宛先が無くなるので消す
+    delete_settings_for_target("channel", channel_id)
+
+    return {
+        "ok": True,
+        "moved": int(moved or 0),
+        "source": label,
+        "origin": origin_name,
+        "channel": target_name,
+        "target_id": target_id,
+    }
 
 
 def _delete_notifications(ids: List[str]) -> Dict[str, List[str]]:
@@ -386,8 +479,8 @@ def _delete_notifications(ids: List[str]) -> Dict[str, List[str]]:
     return deleted_by_channel
 
 
-async def _notify_login(email: str, user_info: dict, request: Request) -> None:
-    payload = build_login_notification(email, user_info, request)
+async def _notify_login(email: str, claims: dict, request: Request) -> None:
+    payload = build_login_notification(email, user_info_from_claims(claims), request)
     await send_login_notification(payload)
 
 
@@ -403,6 +496,7 @@ def _save_notification(entry: dict) -> None:
                 timestamp=datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")),
                 fields=json.dumps(entry["fields"], ensure_ascii=False) if entry.get("fields") else None,
                 color=entry.get("color"),
+                source=entry.get("source"),
             )
         )
         session.commit()
@@ -418,6 +512,7 @@ def _notification_to_dict(r: Notification) -> dict:
         "timestamp": _utc_iso(r.timestamp),
         "fields": json.loads(r.fields) if getattr(r, "fields", None) else None,
         "color": getattr(r, "color", None),
+        "source": getattr(r, "source", None),
     }
 
 
@@ -426,9 +521,11 @@ def _fetch_history(
     limit: int,
     before_timestamp: Optional[datetime] = None,
     before_id: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> tuple[List[dict], bool]:
     with get_session() as session:
         q = session.query(Notification).filter(Notification.channel == channel_name)
+        q = _apply_source_filter(q, source)
         if before_timestamp is not None:
             if before_id is not None:
                 q = q.filter(
@@ -451,11 +548,50 @@ def _fetch_history(
         return [_notification_to_dict(r) for r in rows[:limit]], has_more
 
 
+# 送信元が未設定の通知を絞り込むときに使う擬似的な送信元名。
+# 統合前から残っている古い通知（source が NULL）をUIから指定できるようにする。
+SOURCE_NONE = "-"
+
+
+def _apply_source_filter(query, source: Optional[str]):
+    if not source:
+        return query
+    if source == SOURCE_NONE:
+        return query.filter(Notification.source.is_(None))
+    return query.filter(Notification.source == source)
+
+
+def _fetch_channel_sources(channel_name: str) -> List[dict]:
+    """チャンネル内に存在する送信元とその件数を、多い順に返す。
+
+    履歴はページングして読むため、チップの一覧はクライアント側で組めない。
+    未設定（NULL）は SOURCE_NONE として1件にまとめる。
+    """
+    with get_session() as session:
+        rows = (
+            session.query(Notification.source, func.count(Notification.id))
+            .filter(Notification.channel == channel_name)
+            .group_by(Notification.source)
+            .all()
+        )
+    items = [
+        {"name": (name or SOURCE_NONE), "count": int(count)}
+        for name, count in rows
+    ]
+    items.sort(key=lambda item: (-item["count"], item["name"]))
+    return items
+
+
 def _escape_like(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _search_notifications(query: str, limit: int, channel_name: Optional[str] = None) -> List[dict]:
+def _search_notifications(
+    query: str,
+    limit: int,
+    channel_name: Optional[str] = None,
+    source: Optional[str] = None,
+) -> List[dict]:
     pattern = f"%{_escape_like(query)}%"
     with get_session() as session:
         q = session.query(Notification).filter(
@@ -466,6 +602,7 @@ def _search_notifications(query: str, limit: int, channel_name: Optional[str] = 
         )
         if channel_name:
             q = q.filter(Notification.channel == channel_name)
+        q = _apply_source_filter(q, source)
         rows = q.order_by(Notification.timestamp.desc()).limit(limit).all()
         return [_notification_to_dict(r) for r in rows]
 
@@ -556,97 +693,78 @@ async def no_cache_frontend_assets(request: Request, call_next):
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
+#
+# ログインは Supabase Auth（Google）が行い、バックエンドはトークンを検証するだけ。
+# フロントエンドは /api/auth/config で接続先を受け取り、supabase-js で認可 URL へ飛ばす。
 
-@app.get("/auth/login")
-async def auth_login():
-    if not auth.GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=503, detail="Google OAuth が設定されていません")
 
-    state = secrets.token_urlsafe(16)
-    signed_state = auth.sign_value(state)
+@app.get("/api/auth/config")
+async def auth_config():
+    """フロントエンドが Supabase へ接続するための公開値。
 
-    params = urllib.parse.urlencode({
-        "client_id": auth.GOOGLE_CLIENT_ID,
-        "redirect_uri": auth.GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope": "openid email profile",
-        "state": state,
-    })
-    response = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
-    response.set_cookie(auth.STATE_COOKIE, signed_state, httponly=True, samesite="lax", max_age=600)
-    return response
+    publishable key はブラウザへ配る前提の値なので認証を掛けない。
+    service_role キーはここにも置かない。
+    """
+    if not supabase_auth.configured():
+        raise HTTPException(status_code=503, detail="Supabase Auth が設定されていません")
+    return {
+        "supabaseUrl": supabase_auth.SUPABASE_URL,
+        "supabasePublishableKey": supabase_auth.SUPABASE_PUBLISHABLE_KEY,
+    }
 
 
 @app.get("/auth/callback")
-async def auth_callback(request: Request, code: str, state: str):
-    # state 検証（CSRF 対策）
-    signed_state = request.cookies.get(auth.STATE_COOKIE)
-    if not signed_state:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state cookie なし）")
-    try:
-        expected_state = auth.load_signed_value(signed_state, max_age=600)
-    except BadData:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state 無効）")
-    if expected_state != state:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state 不一致）")
+async def auth_callback_page():
+    """Supabase からのリダイレクト先。
 
-    # code → access_token に交換
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": auth.GOOGLE_CLIENT_ID,
-                "client_secret": auth.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": auth.GOOGLE_REDIRECT_URI,
-                "grant_type": "authorization_code",
-            },
-        )
-    if token_resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="Google との認証に失敗しました")
+    実際のトークン受け取りはブラウザ側（frontend/auth/callback.html）で行う。
+    StaticFiles のディレクトリ表示に頼らず、拡張子なしの固定 URL を
+    Supabase の Redirect URLs へ登録できるようここで配る。
+    """
+    return FileResponse(FRONTEND_DIR / "auth" / "callback.html", media_type="text/html")
 
-    access_token = token_resp.json().get("access_token")
-    if not access_token:
-        raise HTTPException(status_code=400, detail="アクセストークンが取得できませんでした")
 
-    # メールアドレスを取得
-    async with httpx.AsyncClient() as client:
-        user_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    if user_resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="ユーザー情報の取得に失敗しました")
+class SessionRequest(BaseModel):
+    access_token: str
+    # 認証コールバックを終えた直後だけ "login"。トークン更新のたびに
+    # 貼り直される Cookie でログイン通知が飛ばないよう、明示的に区別する。
+    event: Optional[str] = None
 
-    user_info = user_resp.json()
-    email: str = user_info.get("email", "")
-    if not email or email not in auth.ALLOWED_EMAILS:
-        raise HTTPException(status_code=403, detail="このアカウントはアクセスが許可されていません")
 
-    session_token = auth.sign_value(email)
-    response = RedirectResponse(url=auth.APP_URL, status_code=302)
+@app.post("/auth/session")
+async def auth_session(payload: SessionRequest, request: Request, response: Response):
+    """検証済みの Supabase トークンと引き換えに、SSE 用のセッション Cookie を発行する。
+
+    EventSource は Authorization ヘッダーを付けられないため、ここだけ Cookie に頼る。
+    トークンを URL へ載せないための経路であって、独自のログイン手段ではない。
+
+    Signaly へのログイン通知もここが起点になる。共有 Supabase プロジェクトの
+    Database Webhooks はどのアプリへのログインかを区別できないため
+    （login_notify.py の docstring 参照）、アプリ側で通知する。
+    """
+    claims = await auth.verify_supabase_claims(payload.access_token)
+    email = supabase_auth.email_from_claims(claims)
+    if payload.event == "login":
+        asyncio.create_task(_notify_login(email, claims, request))
     response.set_cookie(
         auth.SESSION_COOKIE,
-        session_token,
+        auth.sign_value(email),
         max_age=auth.SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=auth.SESSION_COOKIE_SECURE,
     )
-    response.delete_cookie(auth.STATE_COOKIE)
-    asyncio.create_task(_notify_login(email, user_info, request))
-    return response
+    return {"email": email}
 
 
 @app.get("/auth/me")
-async def auth_me(request: Request):
-    email = auth.get_session_email(request)
-    if not email:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def auth_me(email: str = Depends(auth.require_auth)):
     return {"email": email}
 
 
 @app.post("/auth/logout")
 async def auth_logout(response: Response):
+    # Supabase 側のセッション破棄はフロントエンド（supabase.auth.signOut）が行う
     response.delete_cookie(auth.SESSION_COOKIE)
     return {"ok": True}
 
@@ -705,10 +823,11 @@ async def _read_webhook_body(request: Request) -> dict:
 
 
 @app.post("/webhook/{channel_id}")
-async def receive_webhook(channel_id: str, request: Request):
-    channels = await asyncio.to_thread(_fetch_channels)
-    if channel_id not in channels:
+async def receive_webhook(channel_id: str, request: Request, source: Optional[str] = None):
+    target = await asyncio.to_thread(_resolve_webhook_target, channel_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="Channel not found")
+    channel_name, alias_source = target
 
     raw = await _read_webhook_body(request)
     try:
@@ -716,8 +835,14 @@ async def receive_webhook(channel_id: str, request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    channel_name = channels[channel_id]
-    entry = await _dispatch_notification(channel_name, parsed)
+    # 送信元は「ヘッダー / クエリでの明示 → ペイロードからの判定 → 統合元チャンネル名」の順。
+    # 統合前から使われている Webhook URL でも、最低限どのチャンネル由来かは残る。
+    explicit = request.headers.get(SOURCE_HEADER) or source
+    entry = await _dispatch_notification(
+        channel_name,
+        parsed,
+        source=explicit or parsed.get("source") or alias_source,
+    )
     return {"ok": True, "id": entry["id"]}
 
 
@@ -739,10 +864,10 @@ async def receive_app_login(app_id: str, request: Request, token: Optional[str] 
     if not presented:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    channels = await asyncio.to_thread(_fetch_channels)
-    channel_name = channels.get(presented)
-    if not channel_name:
+    target = await asyncio.to_thread(_resolve_webhook_target, presented)
+    if target is None:
         raise HTTPException(status_code=401, detail="Unauthorized")
+    channel_name, _alias_source = target
 
     raw = await _read_webhook_body(request)
     try:
@@ -853,6 +978,29 @@ class ReorderLayoutRequest(BaseModel):
     channels: List[LayoutChannelItem]
 
 
+class MergeChannelRequest(BaseModel):
+    target_channel_id: str
+    source: Optional[str] = None
+
+    @field_validator("target_channel_id")
+    @classmethod
+    def validate_target(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("統合先のチャンネルを選択してください")
+        return v
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip()
+        if len(v) > 100:
+            raise ValueError("送信元名は100文字以内にしてください")
+        return v or None
+
+
 class ChannelNotificationSettingRequest(BaseModel):
     enabled: Optional[bool] = None
 
@@ -942,6 +1090,33 @@ async def update_channel(
     )
 
 
+@app.post("/api/channels/{channel_id}/merge")
+async def merge_channel(
+    channel_id: str,
+    body: MergeChannelRequest,
+    email: str = Depends(auth.require_auth),
+):
+    try:
+        result = await asyncio.to_thread(
+            _merge_channel, channel_id, body.target_channel_id, body.source
+        )
+    except ValueError:
+        raise HTTPException(status_code=400, detail="統合元と統合先が同じです")
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    return result
+
+
+@app.get("/api/channels/{channel_id}/sources")
+async def get_channel_sources(channel_id: str, email: str = Depends(auth.require_auth)):
+    channels = await asyncio.to_thread(_fetch_channels)
+    channel_name = channels.get(channel_id)
+    if not channel_name:
+        raise HTTPException(status_code=404, detail="Channel not found")
+    sources = await asyncio.to_thread(_fetch_channel_sources, channel_name)
+    return {"sources": sources}
+
+
 @app.delete("/api/channels/{channel_id}")
 async def delete_channel(channel_id: str, email: str = Depends(auth.require_auth)):
     name = await asyncio.to_thread(_delete_channel, channel_id)
@@ -1004,6 +1179,7 @@ async def get_history(
     limit: int = 200,
     before_timestamp: Optional[str] = None,
     before_id: Optional[str] = None,
+    source: Optional[str] = None,
     email: str = Depends(auth.require_auth),
 ):
     channels = await asyncio.to_thread(_fetch_channels)
@@ -1019,7 +1195,7 @@ async def get_history(
             raise HTTPException(status_code=400, detail="Invalid before_timestamp")
 
     logs, has_more = await asyncio.to_thread(
-        _fetch_history, channel_name, limit, before_ts, before_id
+        _fetch_history, channel_name, limit, before_ts, before_id, source
     )
     return {"logs": logs, "has_more": has_more}
 
@@ -1029,6 +1205,7 @@ async def search_notifications(
     q: str = "",
     limit: int = 50,
     channel: Optional[str] = None,
+    source: Optional[str] = None,
     email: str = Depends(auth.require_auth),
 ):
     query = q.strip()
@@ -1040,7 +1217,7 @@ async def search_notifications(
         channels = await asyncio.to_thread(_fetch_channels)
         if channel_name not in channels.values():
             raise HTTPException(status_code=404, detail="Channel not found")
-    results = await asyncio.to_thread(_search_notifications, query, limit, channel_name)
+    results = await asyncio.to_thread(_search_notifications, query, limit, channel_name, source)
     return {"results": results}
 
 

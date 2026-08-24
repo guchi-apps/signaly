@@ -39,7 +39,7 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 エンドポイントを直接叩ける。DB に触る3つの関数だけ差し替えればよい。
 
 ```python
-patch.object(main, "_fetch_channels", lambda: {"<channel_id>": "<channel_name>"})
+patch.object(main, "_resolve_webhook_target", lambda cid: ("<channel_name>", None))
 patch.object(main, "_save_notification", saved.append)
 patch.object(main, "send_push_notifications", lambda entry: None)
 ```
@@ -47,6 +47,77 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 実例は `backend/test_app_login_endpoint.py`。**ローカルの MySQL は root が auth_socket
 認証のため sudo 無しでは繋がらず、`uvicorn` を起動しても `init_db()` で落ちる。**
 エンドポイントの動作確認は上記の方式を使うこと。
+
+### 認証（Supabase Auth）
+
+ログインは**他アプリと共通の Supabase Auth（Google）**。バックエンドは
+`Authorization: Bearer <access_token>` を受け取り、`backend/supabase_auth.py` が
+Supabase の JWKS で署名を検証する（#110）。
+
+**JWT をデコードだけで通さないこと。** ペイロードは誰でも作れる。`PyJWT` の
+`PyJWKClient` で公開鍵を引き、`exp` / `iss` / `aud` まで検証する。許可ユーザーの判定は
+`ALLOWED_EMAILS` で**API 側でも**行う（403 を返す。401 にするとフロントエンドが
+「トークンを更新すれば通る」と誤解する）。
+
+**セッション Cookie を消さないこと。** `EventSource` は Authorization ヘッダーを
+付けられないため、SSE（`/api/stream/{channel}`）だけは Cookie で通す。この Cookie は
+`POST /auth/session` が**検証済みの JWT と引き換えにのみ**発行するもので、独自の
+ログイン経路ではない。**URL へアクセストークンを載せる回避策を採らないこと**
+（アクセスログに残る）。
+
+**Cookie へフォールバックする順序に注意。** `require_auth` は Bearer の検証に失敗したら
+そこで 401/403 を返し、Cookie へ落ちない。落とすと、期限切れトークンを持つ端末が
+古い Cookie でいつまでも通り続ける（`backend/test_supabase_auth.py` が固定している）。
+
+**フロントエンドは `SUPABASE_PUBLISHABLE_KEY` のみを使う。** 値はリポジトリへ埋め込まず
+`GET /api/auth/config` から配る。`service_role` キーはフロントエンドにもリポジトリにも
+置かない。ビルドが無いため `supabase-js` は esm.sh から動的 import する
+（`frontend/auth.js`）。**API を叩くときは必ず `SignalyAuth.fetch` / `authFetch` を通すこと。**
+素の `fetch` では Authorization が付かず 401 になる。
+
+**Supabase プロジェクトは開発用と本番用で分ける。** 本番の値は organization の variable
+（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取り、開発用の値は
+`.env.local` へ直接書く（1Password 依存を避けるため）。Redirect URLs には
+`<ベースURL>/auth/callback` を登録する。
+
+**Signaly 自身のログイン通知に `/notify/app-login/*` を使わないこと。** Supabase プロジェクトは
+複数アプリで共有していて `auth.users` はプロジェクトに1つしかなく、そこへ掛けた Database
+Webhook は他アプリのログインでも発火する。`{app_id}` は設定時に選んだ**表示名にすぎず**
+（`backend/main.py` の `/notify/app-login/{app_id}` のコメント）、通知の中身は Supabase の行
+データだけから組むため、どのアプリへのログインかを区別できない。Signaly のログイン通知は
+`POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py` から送る
+（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
+付けないこと**——ログインしていないのに通知が飛ぶ）。
+
+### 通知チャンネルと送信元（source）
+
+**チャンネルは「用途」で1本、アプリの区別は `notifications.source` で行う。** アプリごとに
+CI・ログインのチャンネルを作ると、アプリ数×用途ぶんチャンネルが増える（#177 の時点で20本近く）。
+送信元は受信時に自動判定するので、**送信側（各リポジトリのワークフロー・1Password・GitHub
+secret）を変えずに済む**。判定の優先順は `X-Signaly-Source` ヘッダー → `?source=` クエリ →
+ペイロードの `source` → `fields` の `App` / `Repository` → Discord 形式の `username`
+（`backend/webhook.py`）。`/notify/app-login/{app_id}` は `app_id` がそのまま送信元になる。
+
+**HTTP ヘッダーは ASCII しか運べない。** 日本語の送信元名を渡したいときに
+`X-Signaly-Source` を使うと文字化けする。`?source=`（URLエンコード）かペイロードの
+`source` キーを使うこと。
+
+**統合しても旧チャンネルIDの Webhook URL は生かす。** チャンネルIDは各リポジトリの1Password /
+GitHub secret に Webhook URL として散らばっており、統合のたびに全リポジトリを書き換えるのは
+現実的でない。`POST /api/channels/{id}/merge` は旧IDを `channel_aliases` に残し、
+`_resolve_webhook_target()` が統合先へ転送する。**Webhook を受ける経路で `_fetch_channels()` を
+直接引かないこと**——別名を解決できず、統合済みのURLが404になる。
+
+**チャンネル統合のテストはモックせず SQLite に通す。** 履歴を `UPDATE` で移し替える不可逆な
+操作なので、戻り値ではなく実際の行を確認する必要がある。`database.py` の engine は import 時に
+接続しないため、`create_engine("sqlite://", poolclass=StaticPool)` を作って
+`main.get_session` / `notification_prefs.get_session` を差し替えれば MySQL 無しで動く
+（実例は `backend/test_channel_merge.py`）。**`StaticPool` を省くと接続ごとに空のDBが作られ、
+`no such table` で落ちる。**
+
+**`create_all()` は既存テーブルにインデックスを張らない。** 後から足した列
+（`notifications.source`）のインデックスは `_migrate_add_columns()` の中で
+`CREATE INDEX` を try/except で流す必要がある。
 
 ### バージョン管理
 

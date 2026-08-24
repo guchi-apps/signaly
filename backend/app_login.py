@@ -2,7 +2,7 @@
 
 アプリ側にログイン通知用のコードを持たせずに済ませるための経路。
 Supabase Auth へ移行したアプリは OAuth コールバックを自分のバックエンドで処理しないため、
-login_notify.py のようにアプリのコードへフックする方式が使えない。
+アプリのコードへフックしてログイン通知を送る方式が使えない。
 代わりに Supabase の Database Webhooks（auth.users / auth.sessions の変更を HTTP POST する機能）
 を Signaly へ向け、ここで通知へ変換する。
 
@@ -22,7 +22,7 @@ TOKEN_HEADER = "x-signaly-token"
 MAX_VALUE_LEN = 500
 APP_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
-COLOR_LOGIN = "#57f287"   # 緑（login_notify.py と同じ）
+COLOR_LOGIN = "#57f287"   # 緑
 COLOR_SIGNUP = "#fbbf24"  # 黄
 
 # 通知しない理由（レスポンスの skipped に入る）
@@ -93,7 +93,7 @@ def _now_utc() -> str:
 def build_fields(record: Dict[str, Any]) -> List[dict]:
     """Supabase の行データから通知フィールドを組む（ホワイトリスト方式）。
 
-    並びは login_notify.py::build_login_notification に合わせている。
+    並びは移行前のログイン通知（旧 login_notify.py）に合わせている。
     auth.users には email / raw_*_meta_data が、auth.sessions には ip / user_agent が入る。
     どちらのテーブルが起点でも動くよう、存在する項目だけを拾う。
     """
@@ -210,6 +210,9 @@ def parse_app_login_payload(app_id: str, payload: Dict[str, Any]) -> Optional[di
         "level": "info",
         "color": color,
         "fields": fields or None,
+        # URL パスの app_id はアプリを一意に表すので、そのまま送信元にする。
+        # ログイン通知を1本のチャンネルへ統合しても、どのアプリのログインかを絞り込める。
+        "source": app_id,
     }
 
 

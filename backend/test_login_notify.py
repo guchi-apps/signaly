@@ -5,6 +5,7 @@ from login_notify import (
     build_login_notification,
     client_ip,
     send_login_notification,
+    user_info_from_claims,
 )
 
 
@@ -22,6 +23,27 @@ class TestClientIp(unittest.TestCase):
         self.assertEqual(client_ip(request), "192.168.1.5")
 
 
+class TestUserInfoFromClaims(unittest.TestCase):
+    def test_picks_only_whitelisted_values(self):
+        info = user_info_from_claims({
+            "sub": "00000000-0000-4000-8000-000000000001",
+            "email": "you@example.com",
+            "email_verified": True,
+            "session_id": "SHOULD_NOT_APPEAR",
+            "user_metadata": {"full_name": "Guchi", "avatar_url": "https://example.com/a.png"},
+            "app_metadata": {"provider": "google", "providers": ["google"]},
+        })
+        self.assertEqual(
+            info, {"name": "Guchi", "provider": "google", "verified_email": True}
+        )
+
+    def test_tolerates_missing_metadata(self):
+        self.assertEqual(
+            user_info_from_claims({}),
+            {"name": None, "provider": None, "verified_email": None},
+        )
+
+
 class TestBuildLoginNotification(unittest.TestCase):
     def test_includes_core_fields(self):
         request = Mock()
@@ -30,7 +52,7 @@ class TestBuildLoginNotification(unittest.TestCase):
 
         result = build_login_notification(
             "user@example.com",
-            {"name": "Test User", "verified_email": True},
+            {"name": "Test User", "provider": "google", "verified_email": True},
             request,
         )
 
@@ -43,6 +65,7 @@ class TestBuildLoginNotification(unittest.TestCase):
         self.assertIn("メール", names)
         self.assertIn("接続元IP", names)
         self.assertIn("メール確認済", names)
+        self.assertIn("プロバイダ", names)
         self.assertIn("User-Agent", names)
 
         email_field = next(f for f in result["fields"] if f["name"] == "メール")

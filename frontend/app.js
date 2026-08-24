@@ -6,6 +6,25 @@ function apiUrl(path) {
   return '/' + path.replace(/^\//, '')
 }
 
+// API 呼び出しはすべてここを通す。Supabase のアクセストークンを Authorization に載せ、
+// 401（＝更新もできないほど古い／取り消された）ならログイン画面へ戻す。
+// 403 は「許可されていないアカウント」なので、ログイン画面に理由を出す。
+async function authFetch(url, options = {}) {
+  const res = await SignalyAuth.fetch(url, options)
+  if (res.status === 401) {
+    // 初回訪問（まだログインしていない）と、失効したのとで文言を分ける。
+    // 未ログインの人に「有効期限が切れました」と出すと何が起きたのか伝わらない。
+    const hadToken = await SignalyAuth.getAccessToken()
+    showLoginOverlayOnce(hadToken ? EXPIRED_MESSAGE : '')
+  } else if (res.status === 403) {
+    // 許可リストに無いアカウント。Supabase 側にはログインできてしまうため、
+    // ここでサインアウトしないと再ログインしても同じアカウントで素通りして 403 に戻る。
+    showLoginOverlayOnce(FORBIDDEN_MESSAGE)
+    void SignalyAuth.signOut()
+  }
+  return res
+}
+
 // 確認ダイアログの「エラー非表示→ボタン無効化→実行→成功/失敗処理→再有効化」という
 // 定型処理を共通化する。run には showError を渡すので、API失敗時は
 // showError(message) を呼んで return すればよい（例外を投げると通信エラー扱いになる）。
@@ -76,6 +95,9 @@ const UNREAD_KEY = 'signaly-unread'
 const PUSH_DISABLED_KEY = 'signaly-push-disabled'
 const CHANNEL_TREE_KEY = 'signaly-channel-tree'
 const COLLAPSED_GROUPS_KEY = 'signaly-collapsed-groups'
+const SOURCE_FILTER_KEY = 'signaly-source-filter'
+// 送信元が未設定の通知を指す擬似的な名前（backend/main.py の SOURCE_NONE と揃える）
+const SOURCE_NONE = '-'
 const UNGROUPED_SECTION_ID = '__ungrouped__'
 const UNREAD_POLL_MS = 15000
 const NEW_CARD_FADE_MS = 60000
@@ -103,6 +125,9 @@ let feedOldestId = null
 let feedHasMore = false
 let feedLoadingMore = false
 let feedLoadMoreEl = null
+let sourceFilters = loadSourceFilters()  // channel_name -> 選択中の送信元（null = すべて）
+let activeSource = null
+let channelSources = []
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
 
@@ -120,6 +145,7 @@ const toastMessageEl = document.getElementById('toast-message')
 const toastCloseBtn = document.getElementById('toast-close')
 const channelTitle = document.getElementById('channel-title')
 const channelSettingsHeaderBtn = document.getElementById('channel-settings-header-btn')
+const sourceFilterEl = document.getElementById('source-filter')
 const notificationsBtn = document.getElementById('notifications-btn')
 const notificationsBadge = document.getElementById('notifications-badge')
 const statusEl = document.getElementById('status')
@@ -488,6 +514,135 @@ function saveCollapsedGroups() {
   }
 }
 
+// ── 送信元フィルタ ────────────────────────────────────────────────────────────
+// チャンネルを用途別に統合すると1本の中に複数アプリの通知が混ざる。
+// どの送信元を見ているかは端末ごとの好みなので、サーバーではなく localStorage に持つ。
+
+function loadSourceFilters() {
+  try {
+    const raw = localStorage.getItem(SOURCE_FILTER_KEY)
+    return raw ? JSON.parse(raw) : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveSourceFilters() {
+  try {
+    localStorage.setItem(SOURCE_FILTER_KEY, JSON.stringify(sourceFilters))
+  } catch {
+    // quota exceeded 等は無視
+  }
+}
+
+function setSourceFilter(channelName, source) {
+  if (source) sourceFilters[channelName] = source
+  else delete sourceFilters[channelName]
+  saveSourceFilters()
+}
+
+function sourceLabel(name) {
+  return name === SOURCE_NONE ? '送信元なし' : name
+}
+
+function renderSourceFilter() {
+  if (!sourceFilterEl) return
+  sourceFilterEl.innerHTML = ''
+
+  // 送信元が1種類しか無いチャンネルでは絞り込む相手がいないので出さない
+  if (channelSources.length < 2) {
+    sourceFilterEl.hidden = true
+    return
+  }
+  sourceFilterEl.hidden = false
+
+  const total = channelSources.reduce((sum, item) => sum + item.count, 0)
+  const chips = [{ name: null, label: 'すべて', count: total }].concat(
+    channelSources.map((item) => ({
+      name: item.name,
+      label: sourceLabel(item.name),
+      count: item.count,
+    })),
+  )
+
+  for (const chip of chips) {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'source-chip'
+    btn.setAttribute('aria-pressed', String(chip.name === activeSource))
+    btn.textContent = chip.label
+
+    const count = document.createElement('span')
+    count.className = 'source-chip-count'
+    count.textContent = String(chip.count)
+    btn.appendChild(count)
+
+    btn.addEventListener('click', () => applySourceFilter(chip.name))
+    sourceFilterEl.appendChild(btn)
+  }
+}
+
+async function refreshChannelSources(channelName) {
+  const channel = channelsByName[channelName]
+  if (!channel) {
+    channelSources = []
+    renderSourceFilter()
+    return
+  }
+  try {
+    const res = await fetch(apiUrl(`api/channels/${channel.id}/sources`))
+    if (!res.ok || activeChannel !== channelName) return
+    const data = await res.json()
+    channelSources = Array.isArray(data.sources) ? data.sources : []
+  } catch {
+    channelSources = []
+  }
+  if (activeChannel !== channelName) return
+  // 保存済みの絞り込み先が消えている場合（統合・削除の後）は「すべて」へ戻す
+  if (activeSource && !channelSources.some((item) => item.name === activeSource)) {
+    activeSource = null
+    setSourceFilter(channelName, null)
+  }
+  renderSourceFilter()
+}
+
+async function reloadActiveFeed() {
+  if (!activeChannel) return
+  const channelName = activeChannel
+  exitNotifSelectMode()
+  feed.innerHTML = ''
+  if (feedStickyDate) feedStickyDate.hidden = true
+  if (emptyState) emptyState.hidden = true
+  seenIds.clear()
+  await loadHistory(channelName, lastReadAt[channelName], 0)
+}
+
+async function applySourceFilter(source) {
+  if (!activeChannel || activeSource === source) return
+  activeSource = source
+  setSourceFilter(activeChannel, source)
+  renderSourceFilter()
+  await reloadActiveFeed()
+}
+
+function matchesSourceFilter(entry) {
+  if (!activeSource) return true
+  return (entry.source || SOURCE_NONE) === activeSource
+}
+
+// 新着1件ごとにサーバーへ数え直しに行くとリクエストが増えるので、
+// 既知の送信元は手元で加算し、初めて見る送信元のときだけ取り直す。
+function noteIncomingSource(entry) {
+  const name = entry.source || SOURCE_NONE
+  const known = channelSources.find((item) => item.name === name)
+  if (known) {
+    known.count += 1
+    renderSourceFilter()
+    return
+  }
+  void refreshChannelSources(entry.channel)
+}
+
 function toggleGroupCollapsed(groupId) {
   if (collapsedGroups.has(groupId)) {
     collapsedGroups.delete(groupId)
@@ -639,7 +794,7 @@ document.addEventListener('keydown', (e) => {
 })
 
 function deleteNotificationsRequest(ids) {
-  return fetch(apiUrl('api/notifications'), {
+  return authFetch(apiUrl('api/notifications'), {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids }),
@@ -801,6 +956,14 @@ function createCard(entry, { isNew = false } = {}) {
   time.textContent = formatNotificationTime(entry.timestamp)
 
   header.appendChild(title)
+
+  if (entry.source) {
+    const source = document.createElement('span')
+    source.className = 'notif-source'
+    source.textContent = entry.source
+    source.title = `送信元: ${entry.source}`
+    header.appendChild(source)
+  }
 
   if (isNew) {
     const badge = document.createElement('span')
@@ -985,7 +1148,10 @@ function createResultRow(entry, onSelect, { deletable = false } = {}) {
 
   const channelEl = document.createElement('span')
   channelEl.className = 'search-result-channel'
-  channelEl.textContent = `#${entry.channel}`
+  // 統合したチャンネルではチャンネル名だけでは発信元が分からないので送信元を添える
+  channelEl.textContent = entry.source
+    ? `#${entry.channel} · ${entry.source}`
+    : `#${entry.channel}`
 
   const timeEl = document.createElement('span')
   timeEl.className = 'search-result-time'
@@ -1062,7 +1228,7 @@ async function runSearch(query) {
   try {
     const params = new URLSearchParams({ q: query })
     if (searchScope === 'channel' && activeChannel) params.set('channel', activeChannel)
-    const res = await fetch(apiUrl(`api/search?${params.toString()}`))
+    const res = await authFetch(apiUrl(`api/search?${params.toString()}`))
     if (requestId !== searchRequestId) return
     if (!res.ok) {
       renderSearchMessage('検索に失敗しました', 'search-error')
@@ -1168,7 +1334,7 @@ function renderNotificationsList(entries) {
 
 async function fetchUnreadForChannel(name) {
   try {
-    const res = await fetch(apiUrl(`api/history/${name}?limit=${NOTIFICATIONS_HISTORY_LIMIT}`))
+    const res = await authFetch(apiUrl(`api/history/${name}?limit=${NOTIFICATIONS_HISTORY_LIMIT}`))
     if (!res.ok) return []
     const { logs } = await res.json()
     const since = lastReadAt[name]
@@ -1557,6 +1723,9 @@ function renderChannelTree(data, selectName = null, options = {}) {
     activeChannel = null
     channelTitle.textContent = 'チャンネルを選択'
     if (channelSettingsHeaderBtn) channelSettingsHeaderBtn.hidden = true
+    channelSources = []
+    activeSource = null
+    renderSourceFilter()
     hideFeedState()
     exitNotifSelectMode()
     return
@@ -1638,7 +1807,7 @@ async function exitReorderMode() {
   }
 
   try {
-    const res = await fetch(apiUrl('api/channels/layout'), {
+    const res = await authFetch(apiUrl('api/channels/layout'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(layout),
@@ -1760,6 +1929,9 @@ async function selectChannel(name) {
   // UI 更新
   setActiveChannelRow(name)
   updateAllBadges()
+  activeSource = sourceFilters[name] || null
+  channelSources = []
+  renderSourceFilter()
   channelTitle.textContent = `# ${name}`
   if (channelSettingsHeaderBtn) channelSettingsHeaderBtn.hidden = false
   feed.innerHTML = ''
@@ -1770,8 +1942,9 @@ async function selectChannel(name) {
   setStatus('connecting')
 
   // SSE を先に張り、履歴読み込み中の通知取りこぼしを防ぐ
-  connectSSE(name)
+  void connectSSE(name)
   await loadHistory(name, sinceLastRead, pendingUnread)
+  void refreshChannelSources(name)
 
   closeSidebar()
 }
@@ -1783,7 +1956,10 @@ async function loadHistory(channelName, sinceLastRead, pendingUnread = 0) {
   feedHasMore = false
   feedLoadMoreEl = null
   try {
-    const res = await fetch(apiUrl(`api/history/${channelName}`))
+    const params = new URLSearchParams()
+    if (activeSource) params.set('source', activeSource)
+    const query = params.toString()
+    const res = await authFetch(apiUrl(`api/history/${channelName}${query ? `?${query}` : ''}`))
     if (activeChannel !== channelName) return
     if (!res.ok) {
       showFeedError(
@@ -1869,7 +2045,8 @@ async function loadMoreHistory(channelName, wrap, btn) {
     const params = new URLSearchParams()
     if (feedOldestTimestamp) params.set('before_timestamp', feedOldestTimestamp)
     if (feedOldestId) params.set('before_id', feedOldestId)
-    const res = await fetch(apiUrl(`api/history/${channelName}?${params.toString()}`))
+    if (activeSource) params.set('source', activeSource)
+    const res = await authFetch(apiUrl(`api/history/${channelName}?${params.toString()}`))
     if (activeChannel !== channelName) return
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const { logs, has_more } = await res.json()
@@ -1941,7 +2118,7 @@ async function pollUnreadChannels() {
   await Promise.all(names.map(async (name) => {
     if (name === activeChannel) return
     try {
-      const res = await fetch(apiUrl(`api/history/${name}?limit=200`))
+      const res = await authFetch(apiUrl(`api/history/${name}?limit=200`))
       if (!res.ok) return
       const { logs } = await res.json()
 
@@ -1995,7 +2172,9 @@ async function pollUnreadChannels() {
 async function pollNewEntries(channelName) {
   if (activeChannel !== channelName) return
   try {
-    const res = await fetch(apiUrl(`api/history/${channelName}?limit=30`))
+    const pollParams = new URLSearchParams({ limit: '30' })
+    if (activeSource) pollParams.set('source', activeSource)
+    const res = await authFetch(apiUrl(`api/history/${channelName}?${pollParams.toString()}`))
     if (!res.ok) return
     const { logs } = await res.json()
     const fresh = logs.filter(e => !seenIds.has(e.id) && activeChannel === e.channel)
@@ -2003,6 +2182,7 @@ async function pollNewEntries(channelName) {
     // prepend は先頭挿入なので古い順に処理して最新が上に来るようにする
     for (const entry of [...fresh].reverse()) {
       prependCard(entry, { isNew: true })
+      noteIncomingSource(entry)
       added = true
     }
     if (added) feed.scrollTop = 0
@@ -2017,12 +2197,18 @@ function startPolling(channelName) {
   pollTimer = setInterval(() => pollNewEntries(channelName), 5000)
 }
 
-function connectSSE(channelName) {
+async function connectSSE(channelName) {
   if (eventSource) {
     eventSource.close()
     eventSource = null
   }
   stopPolling()
+
+  // EventSource は Authorization ヘッダーを付けられないため、
+  // 接続前に検証済みトークンと引き換えのセッション Cookie を貼っておく。
+  await SignalyAuth.ensureSessionCookie()
+  // Cookie を待っている間に別チャンネルへ移っていたら、この接続はもう要らない
+  if (activeChannel !== channelName) return
 
   const url = apiUrl(`api/stream/${channelName}`)
   const es = new EventSource(url)
@@ -2044,8 +2230,11 @@ function connectSSE(channelName) {
     }
 
     if (activeChannel === entry.channel) {
-      prependCard(entry, { isNew: true })
+      if (matchesSourceFilter(entry)) {
+        prependCard(entry, { isNew: true })
+      }
       markChannelRead(entry.channel, parseTimestamp(entry.timestamp))
+      noteIncomingSource(entry)
     } else {
       setChannelUnread(entry.channel, (unread[entry.channel] || 0) + 1)
       updateBadge(entry.channel)
@@ -2073,7 +2262,7 @@ function connectSSE(channelName) {
     es.close()
     // 5 秒後に再接続
     setTimeout(() => {
-      if (activeChannel === channelName) connectSSE(channelName)
+      if (activeChannel === channelName) void connectSSE(channelName)
     }, 5000)
   }
 }
@@ -2082,7 +2271,7 @@ function connectSSE(channelName) {
 
 async function loadNotificationSettings() {
   try {
-    const res = await fetch(apiUrl('api/notification-settings'))
+    const res = await authFetch(apiUrl('api/notification-settings'))
     if (!res.ok) return false
     notificationSettings = await res.json()
     notificationPrefsReady = true
@@ -2331,7 +2520,7 @@ async function syncPushSubscription() {
       const sub = await getBrowserPushSubscription()
       if (sub) {
         const json = sub.toJSON()
-        await fetch(apiUrl('api/push/unsubscribe'), {
+        await authFetch(apiUrl('api/push/unsubscribe'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
@@ -2352,7 +2541,7 @@ async function syncPushSubscription() {
       return
     }
     const json = sub.toJSON()
-    const res = await fetch(apiUrl('api/push/subscribe'), {
+    const res = await authFetch(apiUrl('api/push/subscribe'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2388,7 +2577,7 @@ async function subscribePush(forceNew = false) {
     await ensureServiceWorkerRegistered()
     const reg = await navigator.serviceWorker.ready
 
-    const keyRes = await fetch(apiUrl('api/push/vapid-public-key'))
+    const keyRes = await authFetch(apiUrl('api/push/vapid-public-key'))
     if (!keyRes.ok) {
       pushSubscribed = false
       return {
@@ -2419,7 +2608,7 @@ async function subscribePush(forceNew = false) {
     }
 
     const json = sub.toJSON()
-    const res = await fetch(apiUrl('api/push/subscribe'), {
+    const res = await authFetch(apiUrl('api/push/subscribe'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2457,7 +2646,7 @@ async function unsubscribePush() {
     const sub = await getBrowserPushSubscription()
     if (sub) {
       const json = sub.toJSON()
-      await fetch(apiUrl('api/push/unsubscribe'), {
+      await authFetch(apiUrl('api/push/unsubscribe'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
@@ -2566,7 +2755,7 @@ async function showTestNotificationLocally() {
 }
 
 async function requestServerTestPush(subscriptionJson) {
-  const res = await fetch(apiUrl('api/push/test'), {
+  const res = await authFetch(apiUrl('api/push/test'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -2674,6 +2863,7 @@ async function sendTestNotification() {
 
 SignalySettings.init({
   apiUrl,
+  apiFetch: authFetch,
   closeSidebar,
   notifications: {
     isSupported: () => 'Notification' in window,
@@ -2722,7 +2912,7 @@ createGroupForm?.addEventListener('submit', async (e) => {
   submitBtn.disabled = true
 
   try {
-    const res = await fetch(apiUrl('api/groups'), {
+    const res = await authFetch(apiUrl('api/groups'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -2814,7 +3004,7 @@ createChannelForm?.addEventListener('submit', async (e) => {
     const payload = { name }
     if (createChannelGroupId) payload.group_id = createChannelGroupId
 
-    const res = await fetch(apiUrl('api/channels'), {
+    const res = await authFetch(apiUrl('api/channels'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2840,7 +3030,7 @@ createChannelForm?.addEventListener('submit', async (e) => {
     createChannelWebhook.value = data.webhook_url
     hideWebhookSection(createChannelRevealWebhook, createChannelWebhookSection, createChannelCopy, 'URL をコピー')
 
-    const listRes = await fetch(apiUrl('api/channels'))
+    const listRes = await authFetch(apiUrl('api/channels'))
     if (listRes.ok) {
       const tree = await listRes.json()
       saveChannelTreeCache(tree)
@@ -2889,7 +3079,7 @@ function parseApiError(data, fallback) {
 }
 
 async function refreshChannels(selectName = null) {
-  const res = await fetch(apiUrl('api/channels'))
+  const res = await authFetch(apiUrl('api/channels'))
   if (!res.ok) return false
   const data = await res.json()
   saveChannelTreeCache(data)
@@ -2986,7 +3176,7 @@ groupSettingsRenameBtn?.addEventListener('click', async () => {
   groupSettingsRenameBtn.disabled = true
 
   try {
-    const res = await fetch(apiUrl(`api/groups/${groupSettingsId}`), {
+    const res = await authFetch(apiUrl(`api/groups/${groupSettingsId}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName }),
@@ -3015,7 +3205,7 @@ groupSettingsNotifSegment && setupNotifSegment(groupSettingsNotifSegment, async 
   groupSettingsError.hidden = true
 
   try {
-    const res = await fetch(apiUrl(`api/groups/${groupSettingsId}/notification-setting`), {
+    const res = await authFetch(apiUrl(`api/groups/${groupSettingsId}/notification-setting`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -3051,7 +3241,7 @@ groupDeleteConfirm?.addEventListener('click', () => {
     cancelBtn: groupDeleteCancel,
     errorEl: groupDeleteError,
     run: async (showError) => {
-      const res = await fetch(apiUrl(`api/groups/${groupSettingsId}`), { method: 'DELETE' })
+      const res = await authFetch(apiUrl(`api/groups/${groupSettingsId}`), { method: 'DELETE' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) {
         showError(parseApiError(data, '削除に失敗しました'))
@@ -3090,6 +3280,16 @@ const channelSettingsWebhookExample = document.getElementById('channel-settings-
 const channelSettingsDelete = document.getElementById('channel-settings-delete')
 const channelSettingsSelectDelete = document.getElementById('channel-settings-select-delete')
 const channelSettingsNotifSegment = document.getElementById('channel-settings-notif-segment')
+const channelMergeTarget = document.getElementById('channel-merge-target')
+const channelMergeSource = document.getElementById('channel-merge-source')
+const channelMergeBtn = document.getElementById('channel-merge-btn')
+const channelMergeDialog = document.getElementById('channel-merge-dialog')
+const channelMergeOriginName = document.getElementById('channel-merge-origin-name')
+const channelMergeTargetName = document.getElementById('channel-merge-target-name')
+const channelMergeLabelName = document.getElementById('channel-merge-label-name')
+const channelMergeError = document.getElementById('channel-merge-error')
+const channelMergeCancel = document.getElementById('channel-merge-cancel')
+const channelMergeConfirm = document.getElementById('channel-merge-confirm')
 const channelDeleteDialog = document.getElementById('channel-delete-dialog')
 const channelDeleteName = document.getElementById('channel-delete-name')
 const channelDeleteError = document.getElementById('channel-delete-error')
@@ -3122,6 +3322,38 @@ function resetChannelSettingsDialog() {
   channelSettingsDelete.disabled = false
   channelSettingsSelectDelete.disabled = false
   setNotifSegmentDisabled(channelSettingsNotifSegment, false)
+  if (channelMergeTarget) channelMergeTarget.innerHTML = ''
+  if (channelMergeSource) channelMergeSource.value = ''
+  if (channelMergeBtn) channelMergeBtn.disabled = true
+}
+
+// 統合先の候補（自分以外の全チャンネル）を並べる。
+// 候補が無い＝チャンネルが1本しか無いときは、押しても何も起きないので無効のままにする。
+function populateMergeTargets(channelName) {
+  if (!channelMergeTarget) return
+  channelMergeTarget.innerHTML = ''
+  const others = Object.keys(channelsByName)
+    .filter((name) => name !== channelName)
+    .sort((a, b) => a.localeCompare(b, 'ja'))
+
+  if (!others.length) {
+    const option = document.createElement('option')
+    option.textContent = '統合できるチャンネルがありません'
+    option.value = ''
+    channelMergeTarget.appendChild(option)
+    channelMergeTarget.disabled = true
+    if (channelMergeBtn) channelMergeBtn.disabled = true
+    return
+  }
+
+  channelMergeTarget.disabled = false
+  for (const name of others) {
+    const option = document.createElement('option')
+    option.value = channelsByName[name].id
+    option.textContent = `# ${name}`
+    channelMergeTarget.appendChild(option)
+  }
+  if (channelMergeBtn) channelMergeBtn.disabled = false
 }
 
 function openChannelSettings(channelName) {
@@ -3140,6 +3372,8 @@ function openChannelSettings(channelName) {
   }
   channelSettingsError.hidden = true
   hideWebhookSection(channelSettingsRevealWebhook, channelSettingsWebhookSection, channelSettingsCopy, 'URL をコピー')
+  populateMergeTargets(channelName)
+  if (channelMergeSource) channelMergeSource.value = channelName
   closeSidebar()
   SignalyDialog.open(channelSettingsDialog)
 }
@@ -3155,6 +3389,7 @@ channelSettingsDialog?.addEventListener('click', (e) => {
   if (
     e.target === channelSettingsDialog
     && !channelDeleteDialog?.classList.contains('open')
+    && !channelMergeDialog?.classList.contains('open')
   ) {
     closeChannelSettingsDialog()
   }
@@ -3167,7 +3402,7 @@ channelSettingsNotifSegment && setupNotifSegment(channelSettingsNotifSegment, as
   channelSettingsError.hidden = true
 
   try {
-    const res = await fetch(apiUrl(`api/channels/${channelSettingsId}/notification-setting`), {
+    const res = await authFetch(apiUrl(`api/channels/${channelSettingsId}/notification-setting`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
@@ -3266,7 +3501,7 @@ channelSettingsRenameBtn?.addEventListener('click', async () => {
   channelSettingsRenameBtn.disabled = true
 
   try {
-    const res = await fetch(apiUrl(`api/channels/${channelSettingsId}`), {
+    const res = await authFetch(apiUrl(`api/channels/${channelSettingsId}`), {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName }),
@@ -3310,6 +3545,107 @@ channelSettingsDelete?.addEventListener('click', () => {
   openChannelDeleteDialog()
 })
 
+// ── チャンネルの統合 ──────────────────────────────────────────────────────────
+
+function mergeTargetName() {
+  const id = channelMergeTarget?.value
+  if (!id) return null
+  const entry = Object.entries(channelsByName).find(([, channel]) => channel.id === id)
+  return entry ? entry[0] : null
+}
+
+function openChannelMergeDialog() {
+  const targetName = mergeTargetName()
+  if (!channelSettingsOriginalName || !targetName) return
+  channelMergeOriginName.textContent = `# ${channelSettingsOriginalName}`
+  channelMergeTargetName.textContent = `# ${targetName}`
+  channelMergeLabelName.textContent =
+    channelMergeSource.value.trim() || channelSettingsOriginalName
+  channelMergeError.hidden = true
+  channelMergeError.textContent = ''
+  channelMergeConfirm.disabled = false
+  channelMergeCancel.disabled = false
+  SignalyDialog.open(channelMergeDialog, { focusEl: channelMergeCancel })
+}
+
+function closeChannelMergeDialog() {
+  SignalyDialog.close(channelMergeDialog)
+  channelMergeError.hidden = true
+  channelMergeError.textContent = ''
+  channelMergeConfirm.disabled = false
+  channelMergeCancel.disabled = false
+}
+
+channelMergeBtn?.addEventListener('click', openChannelMergeDialog)
+channelMergeCancel?.addEventListener('click', closeChannelMergeDialog)
+
+channelMergeDialog?.addEventListener('click', (e) => {
+  if (e.target === channelMergeDialog) closeChannelMergeDialog()
+})
+
+channelMergeConfirm?.addEventListener('click', () => {
+  const targetId = channelMergeTarget?.value
+  const targetName = mergeTargetName()
+  if (!channelSettingsId || !channelSettingsOriginalName || !targetId || !targetName) return
+
+  runConfirmAction({
+    confirmBtn: channelMergeConfirm,
+    cancelBtn: channelMergeCancel,
+    errorEl: channelMergeError,
+    extraButtons: [channelMergeBtn, channelSettingsDelete, channelSettingsRenameBtn],
+    run: async (showError) => {
+      const source = channelMergeSource.value.trim()
+      const res = await fetch(apiUrl(`api/channels/${channelSettingsId}/merge`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_channel_id: targetId, source: source || null }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        showError(parseApiError(data, '統合に失敗しました'))
+        return
+      }
+
+      // 統合元のチャンネルは消えるので、端末側に残る記録も片付ける。
+      // 既読位置は統合先のものを残す（統合元のほうが古いと、統合先の既読分まで
+      // 新着として出し直してしまうため）。
+      const originName = channelSettingsOriginalName
+      if (unread[originName]) {
+        setChannelUnread(targetName, (unread[targetName] || 0) + unread[originName])
+        delete unread[originName]
+        saveUnread()
+      }
+      delete lastReadAt[originName]
+      saveLastReadAt()
+      setSourceFilter(originName, null)
+
+      const wasOrigin = activeChannel === originName
+      const wasTarget = activeChannel === targetName
+      if (wasOrigin && eventSource) {
+        eventSource.close()
+        eventSource = null
+      }
+      closeChannelMergeDialog()
+      closeChannelSettingsDialog()
+      showToast(`# ${originName} を # ${targetName} へ統合しました（${data.moved}件）`)
+
+      if (wasOrigin) {
+        // 統合先へ切り替える（selectChannel は同じ名前だと何もしないため一度外す）
+        activeChannel = null
+        await refreshChannels(targetName)
+        return
+      }
+
+      await refreshChannels(activeChannel)
+      if (wasTarget) {
+        // 表示中のチャンネルへ履歴が増えたので読み直す
+        await reloadActiveFeed()
+        await refreshChannelSources(targetName)
+      }
+    },
+  })
+})
+
 channelDeleteCancel?.addEventListener('click', closeChannelDeleteDialog)
 
 channelDeleteDialog?.addEventListener('click', (e) => {
@@ -3325,7 +3661,7 @@ channelDeleteConfirm?.addEventListener('click', () => {
     errorEl: channelDeleteError,
     extraButtons: [channelSettingsDelete, channelSettingsRenameBtn],
     run: async (showError) => {
-      const res = await fetch(apiUrl(`api/channels/${channelSettingsId}`), {
+      const res = await authFetch(apiUrl(`api/channels/${channelSettingsId}`), {
         method: 'DELETE',
       })
       const data = await res.json().catch(() => ({}))
@@ -3560,18 +3896,78 @@ notifBulkDeleteConfirm?.addEventListener('click', () => {
 })
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
+//
+// ログインは Supabase Auth（Google）が行う。ここが持つのはログイン画面の出し入れと、
+// 期限切れ・拒否を受けてログインへ戻す導線だけ。
 
 const loginOverlay = document.getElementById('login-overlay')
+const loginBtn = document.getElementById('login-btn')
+const loginError = document.getElementById('login-error')
 
-async function checkAuth() {
-  try {
-    const res = await fetch(apiUrl('auth/me'))
-    if (res.ok) return true
-  } catch {
-    // ネットワーク失敗時はサイレントに無視
-  }
-  return false
+const FORBIDDEN_MESSAGE = 'このGoogleアカウントではログインできません'
+const EXPIRED_MESSAGE = 'ログインの有効期限が切れました。もう一度ログインしてください'
+
+// auth/callback.html が ?authError= を付けて戻してくる
+const AUTH_ERROR_MESSAGES = {
+  denied: 'ログインがキャンセルされました',
+  failed: 'ログインに失敗しました。もう一度お試しください',
 }
+
+let loginOverlayShown = false
+
+function showLoginError(message) {
+  if (!loginError) return
+  loginError.textContent = message || ''
+  loginError.hidden = !message
+}
+
+function showLoginOverlay(message) {
+  loginOverlayShown = true
+  stopPolling()
+  stopUnreadPolling()
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  clearChannelTreeCache()
+  channelList.innerHTML = ''
+  hideFeedState()
+  loginOverlay.classList.add('visible')
+  showLoginError(message)
+}
+
+/**
+ * ログインへ戻す。同時に走っている複数のリクエストが同じ 401 を返すため、
+ * 最初の1回だけ反応する（あとから来た空文言で表示済みの理由を消さないため）。
+ */
+function showLoginOverlayOnce(message) {
+  if (loginOverlayShown) return
+  showLoginOverlay(message)
+}
+
+/** URL から ?authError= を取り出し、履歴に残さず消す。 */
+function consumeAuthErrorParam() {
+  const params = new URLSearchParams(window.location.search)
+  const code = params.get('authError')
+  if (!code) return ''
+  params.delete('authError')
+  const query = params.toString()
+  const url = window.location.pathname + (query ? `?${query}` : '') + window.location.hash
+  window.history.replaceState(null, '', url)
+  return AUTH_ERROR_MESSAGES[code] || AUTH_ERROR_MESSAGES.failed
+}
+
+loginBtn?.addEventListener('click', async () => {
+  loginBtn.disabled = true
+  showLoginError('')
+  try {
+    // 成功時はそのまま Google の同意画面へ遷移するため、ここへは戻ってこない
+    await SignalyAuth.signInWithGoogle()
+  } catch {
+    loginBtn.disabled = false
+    showLoginError('ログインを開始できませんでした。通信環境を確認してください')
+  }
+})
 
 // ── Service Worker（PWA 自動更新）────────────────────────────────────────────
 
@@ -3661,11 +4057,19 @@ async function init() {
     if (!document.hidden) void updateAppBadge()
   })
 
-  const loginLink = document.getElementById('login-link')
-  if (loginLink) loginLink.href = apiUrl('auth/login')
+  const authError = consumeAuthErrorParam()
+  if (authError) {
+    showLoginOverlay(authError)
+    return
+  }
 
   // SW 登録は初回 iOS PWA で遅くなりがちなので起動をブロックしない
   void ensureServiceWorkerRegistered()
+
+  // トークンが更新されたら SSE 用 Cookie も貼り直す。ログアウト（他タブ含む）も拾う。
+  void SignalyAuth.onAuthStateChange((session, event) => {
+    if (event === 'SIGNED_OUT') showLoginOverlayOnce('ログアウトしました')
+  }).catch(() => {})
 
   const cachedTree = loadChannelTreeCache()
   const startupChannel = resolveStartupChannel()
@@ -3683,13 +4087,10 @@ async function init() {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const res = await fetch(apiUrl('api/channels'), { signal: controller.signal })
+    const res = await authFetch(apiUrl('api/channels'), { signal: controller.signal })
     clearTimeout(timeout)
-    if (res.status === 401) {
-      clearChannelTreeCache()
-      channelList.innerHTML = ''
-      hideFeedState()
-      loginOverlay.classList.add('visible')
+    if (res.status === 401 || res.status === 403) {
+      // authFetch がログイン画面を出しているので、ここでは起動処理を止めるだけ
       return
     }
     if (!res.ok) throw new Error(`HTTP ${res.status}`)

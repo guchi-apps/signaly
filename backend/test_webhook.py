@@ -5,6 +5,7 @@ import unittest
 from webhook import (
     discord_color_to_hex,
     is_discord_payload,
+    normalize_source,
     parse_discord_payload,
     parse_legacy_payload,
     parse_webhook_payload,
@@ -121,6 +122,72 @@ class TestParseWebhook(unittest.TestCase):
     def test_routes_legacy(self):
         result = parse_webhook_payload({"message": "legacy"})
         self.assertEqual(result["message"], "legacy")
+
+
+class TestNormalizeSource(unittest.TestCase):
+    def test_trims(self):
+        self.assertEqual(normalize_source("  signaly  "), "signaly")
+
+    def test_empty_is_none(self):
+        self.assertIsNone(normalize_source("   "))
+        self.assertIsNone(normalize_source(None))
+
+    def test_rejects_non_scalar(self):
+        self.assertIsNone(normalize_source({"a": 1}))
+        self.assertIsNone(normalize_source(["a"]))
+        self.assertIsNone(normalize_source(True))
+
+    def test_truncates(self):
+        self.assertEqual(len(normalize_source("x" * 200)), 100)
+
+
+class TestSourceDetection(unittest.TestCase):
+    """送信元は既存ペイロードから拾えること（送信側の変更を要らなくするため）"""
+
+    def test_ci_payload_app_field(self):
+        # .github/scripts/signaly-notify.sh が実際に送る形
+        result = parse_webhook_payload({
+            "title": "✅ [Signaly] デプロイ 成功",
+            "color": "#57f287",
+            "fields": [
+                {"name": "App", "value": "Signaly", "inline": True},
+                {"name": "Repository", "value": "`guchi-apps/signaly`", "inline": True},
+            ],
+        })
+        self.assertEqual(result["source"], "Signaly")
+
+    def test_repository_field_fallback(self):
+        result = parse_webhook_payload({
+            "title": "CI",
+            "fields": [{"name": "Repository", "value": "`guchi-apps/car-care`", "inline": True}],
+        })
+        self.assertEqual(result["source"], "car-care")
+
+    def test_explicit_source_wins(self):
+        result = parse_webhook_payload({
+            "source": "手動",
+            "fields": [{"name": "App", "value": "Signaly"}],
+        })
+        self.assertEqual(result["source"], "手動")
+
+    def test_discord_username_fallback(self):
+        result = parse_discord_payload({"content": "hi", "username": "Grafana"})
+        self.assertEqual(result["source"], "Grafana")
+
+    def test_discord_fields_beat_username(self):
+        result = parse_discord_payload({
+            "username": "GitHub",
+            "embeds": [{"title": "CI", "fields": [{"name": "App", "value": "issue-deck"}]}],
+        })
+        self.assertEqual(result["source"], "issue-deck")
+
+    def test_no_source(self):
+        self.assertIsNone(parse_webhook_payload({"message": "plain"})["source"])
+        self.assertIsNone(parse_discord_payload({"content": "plain"})["source"])
+
+    def test_legacy_fields_not_a_list(self):
+        # fields が想定外の型でも落ちない
+        self.assertIsNone(parse_legacy_payload({"message": "x", "fields": "bad"})["source"])
 
 
 if __name__ == "__main__":

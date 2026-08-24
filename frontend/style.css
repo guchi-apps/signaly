@@ -738,6 +738,78 @@ html, body {
 .status--connecting { color: var(--warning); }
 .status--disconnected { color: var(--text-subtle); }
 
+/* ── 送信元フィルタ ─────────────────────────────────────────────────────
+   用途別に統合したチャンネルの中を、送信元（アプリ名）で絞り込むチップ列。
+   送信元が1種類しか無いチャンネルでは JS 側で hidden にする。 */
+.source-filter {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.source-filter::-webkit-scrollbar {
+  display: none;
+}
+
+.source-chip {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.source-chip:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.source-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.source-chip-count {
+  font-size: 10px;
+  color: var(--text-subtle);
+}
+
+.source-chip[aria-pressed="true"] .source-chip-count {
+  color: inherit;
+}
+
+/* 通知カード上の送信元バッジ */
+.notif-source {
+  flex-shrink: 0;
+  align-self: center;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
 #feed-viewport {
   flex: 1;
   position: relative;
@@ -2756,19 +2828,34 @@ html, body {
   align-items: center;
   gap: 10px;
   padding: 10px 20px;
+  border: none;
   border-radius: 8px;
   background: #fff;
   color: #333;
+  font-family: inherit;
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
+  cursor: pointer;
   transition: background 0.15s, box-shadow 0.15s;
   box-shadow: 0 1px 3px rgba(0,0,0,0.3);
 }
 
-.login-btn:hover {
+.login-btn:hover:not([disabled]) {
   background: #f5f5f5;
   box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+
+.login-btn[disabled] {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.login-error {
+  margin: 0 0 4px;
+  color: #f87171;
+  font-size: 13px;
+  text-align: center;
 }
 
 /* ── Mobile sidebar ─────────────────────────── */

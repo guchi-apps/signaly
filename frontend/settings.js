@@ -4,11 +4,14 @@ const THEME_KEY = 'signaly-theme'
 
 const SignalySettings = {
   apiUrl: (path) => '/' + String(path).replace(/^\//, ''),
+  // 既定は素の fetch だが、app.js から Authorization 付き・401 検知つきのものを注入する
+  apiFetch: (url, options) => SignalyAuth.fetch(url, options),
   closeSidebar: () => {},
   notifications: null,
 
   init(options = {}) {
     if (options.apiUrl) this.apiUrl = options.apiUrl
+    if (options.apiFetch) this.apiFetch = options.apiFetch
     if (options.closeSidebar) this.closeSidebar = options.closeSidebar
     if (options.notifications) this.notifications = options.notifications
 
@@ -92,7 +95,9 @@ const SignalySettings = {
     })
 
     logoutBtn?.addEventListener('click', async () => {
-      await fetch(this.apiUrl('auth/logout'), { method: 'POST' })
+      logoutBtn.disabled = true
+      // Supabase 側のセッション破棄と、SSE 用 Cookie の削除の両方を行う
+      await SignalyAuth.signOut()
       location.reload()
     })
 
@@ -376,7 +381,7 @@ const SignalySettings = {
       submitBtn.disabled = true
 
       try {
-        const res = await fetch(this.apiUrl('api/keys'), {
+        const res = await this.apiFetch(this.apiUrl('api/keys'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ name }),
@@ -421,7 +426,7 @@ const SignalySettings = {
     const list = document.getElementById('api-key-list')
     if (!list) return
     try {
-      const res = await fetch(this.apiUrl('api/keys'))
+      const res = await this.apiFetch(this.apiUrl('api/keys'))
       if (!res.ok) return
       const { keys } = await res.json()
       list.innerHTML = ''
@@ -449,7 +454,7 @@ const SignalySettings = {
         deleteBtn.textContent = '削除'
         deleteBtn.addEventListener('click', async () => {
           if (!confirm(`「${key.name}」を削除しますか？`)) return
-          await fetch(this.apiUrl(`api/keys/${key.id}`), { method: 'DELETE' })
+          await this.apiFetch(this.apiUrl(`api/keys/${key.id}`), { method: 'DELETE' })
           this.loadApiKeys()
         })
 
