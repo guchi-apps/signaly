@@ -2,6 +2,16 @@
 
 from typing import Any, Dict, List, Optional
 
+# 送信元（source）を明示するリクエストヘッダー。
+# 用途別に統合したチャンネルの中で、どのアプリから来た通知かを見分けるために使う。
+SOURCE_HEADER = "x-signaly-source"
+
+MAX_SOURCE_LEN = 100
+
+# CI / デプロイ通知（.github/scripts/signaly-notify.sh）が embed fields に載せている
+# 送信元を表すフィールド名。前にあるものほど優先する。
+_SOURCE_FIELD_NAMES = ("app", "repository", "repo")
+
 # Discord Execute Webhook で使われるトップレベルキー
 _DISCORD_KEYS = frozenset({
     "content",
@@ -30,6 +40,36 @@ def discord_color_to_hex(color: Any) -> Optional[str]:
     if value < 0 or value > 0xFFFFFF:
         return None
     return f"#{value:06x}"
+
+
+def normalize_source(value: Any) -> Optional[str]:
+    """送信元として保存できる文字列に整える。空・非スカラーなら None。"""
+    if value is None or isinstance(value, (dict, list, bool)):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:MAX_SOURCE_LEN]
+
+
+def _source_from_fields(fields: List[dict]) -> Optional[str]:
+    """パース済みフィールドから送信元らしい値を拾う。
+
+    CI 通知は `App` に `signaly` のようなアプリ名、`Repository` に `` `guchi-apps/signaly` ``
+    を入れている。App が無いリポジトリでも Repository から拾えるよう両方見る。
+    """
+    by_name = {}
+    for field in fields:
+        name = str(field.get("name") or "").strip().lower()
+        if name and name not in by_name:
+            by_name[name] = field.get("value")
+    for key in _SOURCE_FIELD_NAMES:
+        source = normalize_source(by_name.get(key))
+        if source:
+            # Repository は `guchi-apps/signaly` のようにバッククォートで囲まれている
+            source = source.strip("`")
+            return source.split("/")[-1] if key != "app" else source
+    return None
 
 
 def is_discord_payload(data: dict) -> bool:
@@ -152,23 +192,35 @@ def parse_discord_payload(data: dict) -> dict:
     if not title and username:
         title = str(username)
 
+    # 送信元の優先順: ペイロードの source → embed fields の App / Repository → username。
+    # CI 通知は App を必ず載せるため、送信側を変えずに送信元が付く。
+    source = (
+        normalize_source(data.get("source"))
+        or _source_from_fields(fields)
+        or normalize_source(username)
+    )
+
     return {
         "title": title,
         "message": "\n\n".join(message_parts),
         "level": "info",
         "color": color,
         "fields": fields or None,
+        "source": source,
     }
 
 
 def parse_legacy_payload(data: dict) -> dict:
     """Signaly レガシー形式を内部形式に正規化する。"""
+    fields = data.get("fields")
+    fields_list = [f for f in fields if isinstance(f, dict)] if isinstance(fields, list) else []
     return {
         "title": data.get("title") or "",
         "message": data.get("message") or "",
         "level": data.get("level") or "info",
         "color": data.get("color"),
-        "fields": data.get("fields"),
+        "fields": fields,
+        "source": normalize_source(data.get("source")) or _source_from_fields(fields_list),
     }
 
 
