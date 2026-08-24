@@ -61,6 +61,8 @@ jobs:
     #
     # このブロックは scripts/generate-workflow-env-block.sh で生成する（guchi-apps/issue-deck#1307）。
     env:
+      DB_ADMIN_PASSWORD: ${{ secrets.SHARED_DB_MIGRATE_PASSWORD }}
+      DB_ADMIN_USER: ${{ secrets.SHARED_DB_MIGRATE_USER }}
       DB_HOST: ${{ secrets.SHARED_DB_HOST }}
       DB_PASSWORD: ${{ secrets.SHARED_DB_PASSWORD }}
       DB_PORT: ${{ secrets.SHARED_DB_PORT }}
@@ -103,6 +105,10 @@ jobs:
           DB_PASSWORD:          ${{ env.DB_PASSWORD }}
           DB_HOST:              ${{ env.DB_HOST }}
           DB_PORT:              ${{ env.DB_PORT }}
+          # マイグレーション専用ユーザー（DDL権限あり）。アプリ用ユーザーは CRUD 権限しか
+          # 持たず、テーブルを1つ足しただけで起動が CREATE command denied で落ちる（#183）。
+          DB_ADMIN_USER:        ${{ env.DB_ADMIN_USER }}
+          DB_ADMIN_PASSWORD:    ${{ env.DB_ADMIN_PASSWORD }}
           SUPABASE_URL:         ${{ env.SUPABASE_URL }}
           SUPABASE_PUBLISHABLE_KEY: ${{ env.SUPABASE_PUBLISHABLE_KEY }}
           APP_URL:              ${{ env.APP_URL }}
@@ -136,6 +142,8 @@ jobs:
           DB_PASSWORD_B64=$(b64 "$DB_PASSWORD")
           DB_HOST_B64=$(b64 "$DB_HOST")
           DB_PORT_B64=$(b64 "$DB_PORT")
+          DB_ADMIN_USER_B64=$(b64 "$DB_ADMIN_USER")
+          DB_ADMIN_PASSWORD_B64=$(b64 "$DB_ADMIN_PASSWORD")
 
           ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" << EOF
             set -e
@@ -195,6 +203,13 @@ jobs:
             remove_env_var GOOGLE_REDIRECT_URI
 
             bash deploy/ensure_venv.sh "${TARGET_DIR}"
+
+            # スキーマの反映はここだけで行う。DDL 権限はマイグレーション専用ユーザー
+            # だけが持つため、この1コマンドの間だけ環境変数で渡す。**.env へは書かない**
+            # ——書くと常時稼働する uvicorn まで DDL 権限を持つ（#183）。
+            DB_ADMIN_USER="\$(printf '%s' '${DB_ADMIN_USER_B64}' | base64 -d)" \
+            DB_ADMIN_PASSWORD="\$(printf '%s' '${DB_ADMIN_PASSWORD_B64}' | base64 -d)" \
+            .venv/bin/python backend/migrate_db.py
 
             bash deploy/restart-service.sh "${TARGET_DIR}"
 

@@ -1,4 +1,5 @@
 import os
+from urllib.parse import quote
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session
@@ -9,10 +10,37 @@ _DB_HOST = os.environ.get("DB_HOST", "localhost")
 _DB_PORT = os.environ.get("DB_PORT", "3306")
 _DB_NAME = os.environ["DB_NAME"]
 
-engine = create_engine(
-    f"mysql+pymysql://{_DB_USER}:{_DB_PASSWORD}@{_DB_HOST}:{_DB_PORT}/{_DB_NAME}?charset=utf8mb4",
-    pool_pre_ping=True,
-)
+
+def _build_engine(user: str, password: str):
+    return create_engine(
+        f"mysql+pymysql://{quote(user, safe='')}:{quote(password, safe='')}"
+        f"@{_DB_HOST}:{_DB_PORT}/{_DB_NAME}?charset=utf8mb4",
+        pool_pre_ping=True,
+    )
+
+
+# アプリ本体が使うエンジン。VPS 共通のアプリ用ユーザーは SELECT / INSERT / UPDATE /
+# DELETE しか持たず、CREATE TABLE や ALTER TABLE は実行できない。
+engine = _build_engine(_DB_USER, _DB_PASSWORD)
+
+
+def ddl_engine():
+    """DDL（CREATE TABLE / ALTER TABLE）を流すためのエンジンを返す。
+
+    本番の DB ユーザーは用途で分かれている（guchi-apps/vps の `docs/web-stack.md`）。
+    常時稼働するアプリ用ユーザーは CRUD 権限のみで、DDL 権限はマイグレーション専用
+    ユーザーだけが持つ。`DB_ADMIN_USER` / `DB_ADMIN_PASSWORD` はそのマイグレーション用
+    ユーザーで、デプロイ時のマイグレーション（`backend/migrate_db.py`）の実行中だけ
+    環境変数として渡す。**`.env` へは書かないこと**——アプリ本体まで DDL 権限を持つ。
+
+    未設定なら（ローカルなど、1つのユーザーが DDL まで持つ環境向けに）アプリ用の
+    エンジンへフォールバックする。
+    """
+    admin_user = os.environ.get("DB_ADMIN_USER")
+    admin_password = os.environ.get("DB_ADMIN_PASSWORD", "")
+    if not admin_user:
+        return engine, False
+    return _build_engine(admin_user, admin_password), True
 
 
 class Base(DeclarativeBase):
@@ -123,7 +151,7 @@ def get_session() -> Session:
     return Session(engine)
 
 
-def _migrate_add_columns() -> None:
+def _migrate_add_columns(bind=None) -> None:
     notification_columns = [
         "fields TEXT NULL",
         "color VARCHAR(20) NULL",
@@ -135,7 +163,7 @@ def _migrate_add_columns() -> None:
         "group_id VARCHAR(36) NULL",
         "sort_order INT NOT NULL DEFAULT 0",
     ]
-    with engine.connect() as conn:
+    with (bind or engine).connect() as conn:
         for col_def in notification_columns:
             try:
                 conn.execute(text(f"ALTER TABLE notifications ADD COLUMN {col_def}"))
@@ -158,5 +186,16 @@ def _migrate_add_columns() -> None:
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
-    _migrate_add_columns()
+    """テーブルの作成と列の追加を行う。
+
+    **アプリの起動時には呼ばないこと。** アプリ用の DB ユーザーは DDL 権限を持たない
+    ため、テーブルが1つでも増えると起動のたびに `CREATE command denied` で落ちる
+    （#183）。呼び出し口はデプロイ時に走る `backend/migrate_db.py` だけにする。
+    """
+    bind, is_admin = ddl_engine()
+    try:
+        Base.metadata.create_all(bind=bind)
+        _migrate_add_columns(bind)
+    finally:
+        if is_admin:
+            bind.dispose()

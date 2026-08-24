@@ -119,6 +119,28 @@ GitHub secret に Webhook URL として散らばっており、統合のたび�
 （`notifications.source`）のインデックスは `_migrate_add_columns()` の中で
 `CREATE INDEX` を try/except で流す必要がある。
 
+### DBスキーマの反映（アプリ起動時にDDLを流さない）
+
+**`backend/main.py` の lifespan から `init_db()`（`create_all`）を呼ばないこと。** 本番のDB
+ユーザーは用途で分かれていて、常時稼働するアプリ用ユーザーは SELECT / INSERT / UPDATE /
+DELETE しか持たない（正は `guchi-apps/vps` の `docs/web-stack.md`）。起動のたびに
+`create_all()` を流す作りだと、**モデルを1つ足した瞬間にデプロイが落ちる**——
+`create_all()` は既存テーブルには `CREATE TABLE` を発行しないため、それまでは権限が無くても
+通ってしまい、新規テーブルが増えた回だけ `CREATE command denied` で起動に失敗する。#183 は
+`channel_aliases`（#177で追加）で実際にこれを踏み、本番が503になった。
+
+**スキーマの反映は `backend/migrate_db.py` だけが行う。** `.github/workflows/deploy.yml` が
+`ensure_venv.sh` の後・`restart-service.sh` の前に1回実行する。DDL権限を持つのは
+マイグレーション専用ユーザー（organizationの `SHARED_DB_MIGRATE_USER` /
+`SHARED_DB_MIGRATE_PASSWORD`）だけで、**この1コマンドの実行中だけ `DB_ADMIN_USER` /
+`DB_ADMIN_PASSWORD` として環境変数で渡す。`.env` へは書かないこと**——書くと常時稼働する
+uvicorn まで DDL 権限を持つ。未設定ならアプリ用ユーザーへフォールバックする
+（ローカル向け。本番では必ず渡る）。
+
+**マイグレーション専用ユーザーには、DBごとに GRANT が要る。** `app_signaly` への DDL 権限が
+無ければ `migrate_db.py` が GRANT 文を添えて失敗する。付与はVPS上の手作業で、
+`guchi-apps/vps` の `mysql/` はデプロイの対象外（`deploy.yml` の `paths` に無い）。
+
 ### バージョン管理
 
 **`package.json` ではなく `version.json`**（`{"version": "1.5.8"}`）。

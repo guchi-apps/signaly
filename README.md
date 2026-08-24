@@ -72,6 +72,14 @@ cp .env.local.example .env.local   # 値を編集（git 管理外）
 
 `.env.local` に DB 接続情報・Supabase の接続先・`SECRET_KEY` などを設定します。詳細は `.env.local.example` を参照してください。
 
+DB のテーブルは**アプリの起動時には作られません**（本番のアプリ用 DB ユーザーは DDL 権限を持たないため。#183）。`.env.local` を設定したら、一度マイグレーションを実行してください。
+
+```bash
+.venv/bin/python backend/migrate_db.py   # 接続先は .env.local から読む
+```
+
+モデル（`backend/database.py`）を変更したときも、同じコマンドで反映します。本番では `.github/workflows/deploy.yml` がデプロイのたびにマイグレーション専用ユーザーで実行します。
+
 ログインは他アプリと共通の Supabase Auth（Google ログイン）です。Supabase プロジェクトは開発用と本番用で分けます。開発用の `project-url` / `publishable-key` は 1Password を経由せず `.env.local` へ直接書き（`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`）、開発用 Supabase の **Redirect URLs** に `https://<TUNNEL_HOSTNAME>/auth/callback` を登録します。`service_role` キーはフロントエンドにもリポジトリにも置きません。
 
 Web Push を使う場合:
@@ -118,6 +126,7 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | 変数 | 用途 |
 |------|------|
 | `DB_*` | MySQL 接続 |
+| `DB_ADMIN_USER` / `DB_ADMIN_PASSWORD` | マイグレーション専用ユーザー（DDL 権限あり）。`backend/migrate_db.py` の実行中だけ渡す。`.env` へは書かない |
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
 | `APP_URL` | ベース URL |
 | `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
