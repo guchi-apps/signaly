@@ -5,7 +5,7 @@ Webhook で受け取った通知をリアルタイム表示するプライベー
 - **バックエンド**: FastAPI + Uvicorn（Python）
 - **フロントエンド**: Vanilla JS（PWA）
 - **DB**: MySQL + SQLAlchemy
-- **認証**: Google OAuth（ブラウザ）/ API キー（スクリプト）
+- **認証**: Supabase Auth の Google ログイン（ブラウザ）/ API キー（スクリプト）
 - **本番**: systemd + Apache リバースプロキシ（`https://signaly.gucchii.com/` → `127.0.0.1:8002`）
 
 ## 主な機能
@@ -25,13 +25,16 @@ signaly/
 ├── backend/              # FastAPI API
 │   ├── main.py
 │   ├── database.py
-│   ├── auth.py
+│   ├── auth.py           # 認証の入口（Bearer JWT / API キー / SSE 用 Cookie）
+│   ├── supabase_auth.py  # Supabase の JWT を JWKS で検証
 │   ├── push.py
 │   ├── webhook.py
 │   ├── app_login.py      # Supabase Database Webhooks → ログイン通知の変換
 │   └── requirements.txt
 ├── frontend/             # 静的 UI（PWA）
 │   ├── app.js
+│   ├── auth.js           # Supabase Auth（Google ログイン）
+│   ├── auth/callback.html
 │   ├── changelog.js
 │   └── ...
 ├── deploy/               # 本番設定
@@ -56,7 +59,7 @@ signaly/
 
 - Python 3.9+
 - MySQL（WSL ローカル推奨）
-- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)（OAuth / Web Push / スマホ確認用）
+- [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)（ログイン / Web Push / スマホ確認用）
 
 ### 初回セットアップ
 
@@ -67,9 +70,9 @@ python3 -m venv .venv
 cp .env.local.example .env.local   # 値を編集（git 管理外）
 ```
 
-`.env.local` に DB 接続情報・Google OAuth・`SECRET_KEY` などを設定します。詳細は `.env.local.example` を参照してください。
+`.env.local` に DB 接続情報・Supabase の接続先・`SECRET_KEY` などを設定します。詳細は `.env.local.example` を参照してください。
 
-Google OAuth は開発用と本番用で Google Cloud のプロジェクト/クライアントを分けること。開発用クライアントは他の個人プロジェクトと共通のものを使い回してよく、1Password への登録も不要（本番用は 1Password で分離管理）。開発用クライアントの承認済みリダイレクト URI に `https://<TUNNEL_HOSTNAME>/auth/callback` を登録する。
+ログインは他アプリと共通の Supabase Auth（Google ログイン）です。Supabase プロジェクトは開発用と本番用で分けます。開発用の `project-url` / `publishable-key` は 1Password を経由せず `.env.local` へ直接書き（`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`）、開発用 Supabase の **Redirect URLs** に `https://<TUNNEL_HOSTNAME>/auth/callback` を登録します。`service_role` キーはフロントエンドにもリポジトリにも置きません。
 
 Web Push を使う場合:
 
@@ -93,10 +96,10 @@ bash scripts/dev.sh
 ```
 
 - ローカル: `http://127.0.0.1:8001`
-- トンネル: `https://<your-domain>/`（OAuth / PWA / Web Push はこちら）
+- トンネル: `https://<your-domain>/`（ログイン / PWA / Web Push はこちら）
 - 停止: `Ctrl+C`
 
-同一 LAN から HTTP のみ確認する場合（OAuth / Push 不可）:
+同一 LAN から HTTP のみ確認する場合（ログイン / Push 不可）:
 
 ```bash
 bash scripts/portforward.sh
@@ -115,15 +118,15 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | 変数 | 用途 |
 |------|------|
 | `DB_*` | MySQL 接続 |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Google OAuth |
-| `GOOGLE_REDIRECT_URI` / `APP_URL` | リダイレクト先・ベース URL |
-| `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り） |
-| `LOGIN_WEBHOOK_URL` | Google ログイン通知先 Webhook URL（未設定なら通知しない） |
-| `SECRET_KEY` | セッション Cookie 署名 |
+| `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
+| `APP_URL` | ベース URL |
+| `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
+| `LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない） |
+| `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Named Tunnel（開発用） |
 
-本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（OAuth / SECRET_KEY / VAPID 含む）。ローカル開発は `.env.local`（1Password 不要）を使い、Google OAuth クライアントは本番と分離した開発用のものを使います。
+本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（Supabase / SECRET_KEY / VAPID 含む）。`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` は他アプリと共通のため organization の variable（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取ります。ローカル開発は `.env.local`（1Password 不要）を使い、開発用 Supabase プロジェクトを参照します。
 
 ## Webhook
 
@@ -198,10 +201,10 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 
 | アイテム | フィールド | 用途 |
 |---------|-----------|------|
-| `signaly` | `google-client-id` / `google-client-secret` | Google OAuth |
-| `signaly` | `google-redirect-uri` / `app-url` | `https://signaly.gucchii.com/auth/callback` / `https://signaly.gucchii.com/` |
-| `signaly` | `allowed-emails` / `secret-key` | ログイン許可・セッション署名 |
-| `signaly` | `login-webhook-url` | Google ログイン通知（Signaly Webhook URL 全文） |
+| `signaly` | `app-url` | `https://signaly.gucchii.com/` |
+| `signaly` | `allowed-emails` / `secret-key` | ログイン許可・SSE 用 Cookie の署名 |
+| `signaly` | `login-webhook-url` | ログイン通知（Signaly Webhook URL 全文） |
+| `Supabase` | `project-url` / `publishable-key` | Supabase Auth（全アプリ共通。GitHub 側は organization の variable） |
 | `signaly` | `vapid-*` | Web Push |
 | `signaly` | `target-dir` / `db-name` | デプロイ先・DB 名 |
 | `DB` | `db-user` 等 | MySQL 共通接続情報 |
@@ -209,7 +212,9 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 | `githubaction-sshkey` | `private_key` | GitHub Actions 用 SSH 秘密鍵 |
 | `signaly` | `ci-webhook-url` | CI / デプロイ通知（Signaly Webhook URL 全文） |
 
-`ci-webhook-url` / `login-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh`、Google ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST します。
+`ci-webhook-url` / `login-webhook-url` は Signaly 上で通知用チャンネルを作成し、**Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）を 1Password の `signaly` アイテムに登録します。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST します。
+
+**Signaly 自身のログイン通知に `/notify/app-login/*` は使えません。** Supabase プロジェクトは複数アプリで共有しており、`auth.users` に掛けた Database Webhook は他アプリのログインでも発火するため、どのアプリへのログインかを区別できないためです（`{app_id}` は表示名にすぎません）。
 
 `DB` / `Server` / `githubaction-sshkey` は他アプリと共通のため、GitHub 側では organization の共通
 シークレット（`SHARED_DB_*` / `SERVER_*`）として持ちます。`known_hosts` は 1Password ではなく
@@ -238,8 +243,9 @@ Apache には `deploy/apache.conf` を `signaly.gucchii.com` 用 VirtualHost に
 
 ```
 APP_URL=https://signaly.gucchii.com/
-GOOGLE_REDIRECT_URI=https://signaly.gucchii.com/auth/callback
 ```
+
+本番用 Supabase の **Redirect URLs** には `https://signaly.gucchii.com/auth/callback` を登録します（ワイルドカードは使いません）。
 
 ### ポート
 

@@ -4,24 +4,22 @@ import hashlib
 import logging
 import os
 import secrets
-import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Dict, List, Optional
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
-from itsdangerous import BadData
 from sqlalchemy import and_, func, or_
 
 import app_login
 import auth
+import supabase_auth
 from database import (
     ApiKey,
     Channel,
@@ -32,7 +30,11 @@ from database import (
     get_session,
     init_db,
 )
-from login_notify import build_login_notification, send_login_notification
+from login_notify import (
+    build_login_notification,
+    send_login_notification,
+    user_info_from_claims,
+)
 from notification_prefs import (
     delete_settings_for_target,
     get_notification_settings,
@@ -477,8 +479,8 @@ def _delete_notifications(ids: List[str]) -> Dict[str, List[str]]:
     return deleted_by_channel
 
 
-async def _notify_login(email: str, user_info: dict, request: Request) -> None:
-    payload = build_login_notification(email, user_info, request)
+async def _notify_login(email: str, claims: dict, request: Request) -> None:
+    payload = build_login_notification(email, user_info_from_claims(claims), request)
     await send_login_notification(payload)
 
 
@@ -691,97 +693,78 @@ async def no_cache_frontend_assets(request: Request, call_next):
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────────
+#
+# ログインは Supabase Auth（Google）が行い、バックエンドはトークンを検証するだけ。
+# フロントエンドは /api/auth/config で接続先を受け取り、supabase-js で認可 URL へ飛ばす。
 
-@app.get("/auth/login")
-async def auth_login():
-    if not auth.GOOGLE_CLIENT_ID:
-        raise HTTPException(status_code=503, detail="Google OAuth が設定されていません")
 
-    state = secrets.token_urlsafe(16)
-    signed_state = auth.sign_value(state)
+@app.get("/api/auth/config")
+async def auth_config():
+    """フロントエンドが Supabase へ接続するための公開値。
 
-    params = urllib.parse.urlencode({
-        "client_id": auth.GOOGLE_CLIENT_ID,
-        "redirect_uri": auth.GOOGLE_REDIRECT_URI,
-        "response_type": "code",
-        "scope": "openid email profile",
-        "state": state,
-    })
-    response = RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
-    response.set_cookie(auth.STATE_COOKIE, signed_state, httponly=True, samesite="lax", max_age=600)
-    return response
+    publishable key はブラウザへ配る前提の値なので認証を掛けない。
+    service_role キーはここにも置かない。
+    """
+    if not supabase_auth.configured():
+        raise HTTPException(status_code=503, detail="Supabase Auth が設定されていません")
+    return {
+        "supabaseUrl": supabase_auth.SUPABASE_URL,
+        "supabasePublishableKey": supabase_auth.SUPABASE_PUBLISHABLE_KEY,
+    }
 
 
 @app.get("/auth/callback")
-async def auth_callback(request: Request, code: str, state: str):
-    # state 検証（CSRF 対策）
-    signed_state = request.cookies.get(auth.STATE_COOKIE)
-    if not signed_state:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state cookie なし）")
-    try:
-        expected_state = auth.load_signed_value(signed_state, max_age=600)
-    except BadData:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state 無効）")
-    if expected_state != state:
-        raise HTTPException(status_code=400, detail="不正なリクエストです（state 不一致）")
+async def auth_callback_page():
+    """Supabase からのリダイレクト先。
 
-    # code → access_token に交換
-    async with httpx.AsyncClient() as client:
-        token_resp = await client.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "code": code,
-                "client_id": auth.GOOGLE_CLIENT_ID,
-                "client_secret": auth.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": auth.GOOGLE_REDIRECT_URI,
-                "grant_type": "authorization_code",
-            },
-        )
-    if token_resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="Google との認証に失敗しました")
+    実際のトークン受け取りはブラウザ側（frontend/auth/callback.html）で行う。
+    StaticFiles のディレクトリ表示に頼らず、拡張子なしの固定 URL を
+    Supabase の Redirect URLs へ登録できるようここで配る。
+    """
+    return FileResponse(FRONTEND_DIR / "auth" / "callback.html", media_type="text/html")
 
-    access_token = token_resp.json().get("access_token")
-    if not access_token:
-        raise HTTPException(status_code=400, detail="アクセストークンが取得できませんでした")
 
-    # メールアドレスを取得
-    async with httpx.AsyncClient() as client:
-        user_resp = await client.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {access_token}"},
-        )
-    if user_resp.status_code != 200:
-        raise HTTPException(status_code=400, detail="ユーザー情報の取得に失敗しました")
+class SessionRequest(BaseModel):
+    access_token: str
+    # 認証コールバックを終えた直後だけ "login"。トークン更新のたびに
+    # 貼り直される Cookie でログイン通知が飛ばないよう、明示的に区別する。
+    event: Optional[str] = None
 
-    user_info = user_resp.json()
-    email: str = user_info.get("email", "")
-    if not email or email not in auth.ALLOWED_EMAILS:
-        raise HTTPException(status_code=403, detail="このアカウントはアクセスが許可されていません")
 
-    session_token = auth.sign_value(email)
-    response = RedirectResponse(url=auth.APP_URL, status_code=302)
+@app.post("/auth/session")
+async def auth_session(payload: SessionRequest, request: Request, response: Response):
+    """検証済みの Supabase トークンと引き換えに、SSE 用のセッション Cookie を発行する。
+
+    EventSource は Authorization ヘッダーを付けられないため、ここだけ Cookie に頼る。
+    トークンを URL へ載せないための経路であって、独自のログイン手段ではない。
+
+    Signaly へのログイン通知もここが起点になる。共有 Supabase プロジェクトの
+    Database Webhooks はどのアプリへのログインかを区別できないため
+    （login_notify.py の docstring 参照）、アプリ側で通知する。
+    """
+    claims = await auth.verify_supabase_claims(payload.access_token)
+    email = supabase_auth.email_from_claims(claims)
+    if payload.event == "login":
+        asyncio.create_task(_notify_login(email, claims, request))
     response.set_cookie(
         auth.SESSION_COOKIE,
-        session_token,
+        auth.sign_value(email),
         max_age=auth.SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
+        secure=auth.SESSION_COOKIE_SECURE,
     )
-    response.delete_cookie(auth.STATE_COOKIE)
-    asyncio.create_task(_notify_login(email, user_info, request))
-    return response
+    return {"email": email}
 
 
 @app.get("/auth/me")
-async def auth_me(request: Request):
-    email = auth.get_session_email(request)
-    if not email:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def auth_me(email: str = Depends(auth.require_auth)):
     return {"email": email}
 
 
 @app.post("/auth/logout")
 async def auth_logout(response: Response):
+    # Supabase 側のセッション破棄はフロントエンド（supabase.auth.signOut）が行う
     response.delete_cookie(auth.SESSION_COOKIE)
     return {"ok": True}
 

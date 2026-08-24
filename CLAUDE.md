@@ -48,6 +48,47 @@ patch.object(main, "send_push_notifications", lambda entry: None)
 認証のため sudo 無しでは繋がらず、`uvicorn` を起動しても `init_db()` で落ちる。**
 エンドポイントの動作確認は上記の方式を使うこと。
 
+### 認証（Supabase Auth）
+
+ログインは**他アプリと共通の Supabase Auth（Google）**。バックエンドは
+`Authorization: Bearer <access_token>` を受け取り、`backend/supabase_auth.py` が
+Supabase の JWKS で署名を検証する（#110）。
+
+**JWT をデコードだけで通さないこと。** ペイロードは誰でも作れる。`PyJWT` の
+`PyJWKClient` で公開鍵を引き、`exp` / `iss` / `aud` まで検証する。許可ユーザーの判定は
+`ALLOWED_EMAILS` で**API 側でも**行う（403 を返す。401 にするとフロントエンドが
+「トークンを更新すれば通る」と誤解する）。
+
+**セッション Cookie を消さないこと。** `EventSource` は Authorization ヘッダーを
+付けられないため、SSE（`/api/stream/{channel}`）だけは Cookie で通す。この Cookie は
+`POST /auth/session` が**検証済みの JWT と引き換えにのみ**発行するもので、独自の
+ログイン経路ではない。**URL へアクセストークンを載せる回避策を採らないこと**
+（アクセスログに残る）。
+
+**Cookie へフォールバックする順序に注意。** `require_auth` は Bearer の検証に失敗したら
+そこで 401/403 を返し、Cookie へ落ちない。落とすと、期限切れトークンを持つ端末が
+古い Cookie でいつまでも通り続ける（`backend/test_supabase_auth.py` が固定している）。
+
+**フロントエンドは `SUPABASE_PUBLISHABLE_KEY` のみを使う。** 値はリポジトリへ埋め込まず
+`GET /api/auth/config` から配る。`service_role` キーはフロントエンドにもリポジトリにも
+置かない。ビルドが無いため `supabase-js` は esm.sh から動的 import する
+（`frontend/auth.js`）。**API を叩くときは必ず `SignalyAuth.fetch` / `authFetch` を通すこと。**
+素の `fetch` では Authorization が付かず 401 になる。
+
+**Supabase プロジェクトは開発用と本番用で分ける。** 本番の値は organization の variable
+（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取り、開発用の値は
+`.env.local` へ直接書く（1Password 依存を避けるため）。Redirect URLs には
+`<ベースURL>/auth/callback` を登録する。
+
+**Signaly 自身のログイン通知に `/notify/app-login/*` を使わないこと。** Supabase プロジェクトは
+複数アプリで共有していて `auth.users` はプロジェクトに1つしかなく、そこへ掛けた Database
+Webhook は他アプリのログインでも発火する。`{app_id}` は設定時に選んだ**表示名にすぎず**
+（`backend/main.py` の `/notify/app-login/{app_id}` のコメント）、通知の中身は Supabase の行
+データだけから組むため、どのアプリへのログインかを区別できない。Signaly のログイン通知は
+`POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py` から送る
+（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
+付けないこと**——ログインしていないのに通知が飛ぶ）。
+
 ### 通知チャンネルと送信元（source）
 
 **チャンネルは「用途」で1本、アプリの区別は `notifications.source` で行う。** アプリごとに
