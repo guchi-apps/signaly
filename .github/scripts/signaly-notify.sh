@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Signaly CI / デプロイ通知スクリプト（GitHub Actions 用）
 #
+# 手順の詳細: ../_docs/README.md（CI / デプロイ通知セクション）
 # 各アプリの .github/scripts/ にコピーして使用する。
 #
 # Requires: SIGNALY_WEBHOOK_URL, NOTIFY_STATUS (success|failure|cancelled)
 # Optional: NOTIFY_APP, NOTIFY_KIND (e.g. デプロイ / CI), NOTIFY_JOB, NOTIFY_VERSION (リリース時)
+# Optional: NOTIFY_RUN_URL … 「Run」のリンク先。既定はこの通知を出しているrun自身。
+#   別のrunについて通知する場合だけ指定する（例: deploy-retry.yml が「再実行するデプロイの
+#   run」へリンクする。#2134）。未指定なら従来どおりの挙動。
+#
+# **どう転んでも終了コードは0で返す**（#2237）。通知先が落ちていてもrunを赤くしない。
+# 呼び出し側のステップには、あわせて`continue-on-error: true`を付けておく。
 set -euo pipefail
 
 if [[ -z "${SIGNALY_WEBHOOK_URL:-}" ]]; then
@@ -22,7 +29,7 @@ repository="${GITHUB_REPOSITORY:-}"
 ref_name="${GITHUB_REF_NAME:-}"
 sha="${GITHUB_SHA:-}"
 sha_short="${sha:0:7}"
-run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+run_url="${NOTIFY_RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
 
 case "$status" in
   success)
@@ -117,7 +124,35 @@ print(json.dumps({
 PY
 )
 
-curl -fsS \
+# **通知が届かなくてもrunは落とさない**（#2237）。通知はCI・デプロイの結果の記録であって
+# 成否そのものではない。Signalyが止まっている間にmainへマージすると、デプロイが成功して
+# いるのに`curl: (22) 503`でこのステップだけが失敗し、run全体が赤くなっていた
+# （実例: `Deploy to Production` run 32721175959。tag/build/deploy/releaseは全て成功）。
+#
+# `--retry`はタイムアウトと408・429・500・502・503・504を一時エラーとみなして再試行するので、
+# Signaly自身のデプロイ中に当たった503はこれで拾える。それでも駄目なら警告だけ残して0で返す。
+#
+# **curlのstderrは出さない。** HTTPエラーのメッセージ（`curl: (22) The requested URL returned
+# error: 503`）にURLは載らないが、接続に失敗したとき（`curl: (7) Failed to connect to <host>`）は
+# webhookのホスト名が載る。GitHubのマスクはsecretの完全一致でしか効かないため、URL全体を
+# secretにしていてもホスト名だけがPUBLICなrunのログへ残ってしまう
+# （`session-notify.sh`が失敗時にURLを出さないのと同じ理由）。
+#
+# 代わりに**HTTPコードとcurlの終了コード**を出す。原因の切り分けにはこれで足りる
+# （`22`=HTTPエラー、`6`=名前解決、`7`=接続不可、`28`=タイムアウト）。
+http_code=""
+curl_status=0
+http_code="$(curl -fsS -o /dev/null -w '%{http_code}' \
+  --max-time 10 --retry 2 --retry-delay 2 \
   -H "Content-Type: application/json" \
   -d "$payload" \
-  "$SIGNALY_WEBHOOK_URL"
+  "$SIGNALY_WEBHOOK_URL" 2>/dev/null)" || curl_status=$?
+
+if [[ "$curl_status" -eq 0 ]]; then
+  echo "Signalyへ通知しました (HTTP ${http_code})"
+  exit 0
+fi
+
+# 接続そのものに失敗した場合、`%{http_code}`は`000`になる。
+echo "::warning::Signalyへの通知に失敗しました (HTTP ${http_code:-000} / curl exit ${curl_status})。通知先が停止している可能性がありますが、このrunは成功として扱います"
+exit 0
