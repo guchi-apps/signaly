@@ -152,6 +152,13 @@ organization secret を覆い隠すため、アプリ別チャンネルへ戻る
 整形し直す作りにしないこと**——形の定義が送信側と受信側の2か所に散り、通知の中身が
 「送信側の書いたとおり」でなくなる。
 
+**ログイン通知の `source` は、そのリポジトリの CI / デプロイ通知の `NOTIFY_APP` と同じ値に
+する（#204）。** 通知一覧の送信元チップは文字列そのままで分かれるため、ずれると同じアプリが
+2つのチップに割れる。**「リポジトリ名へ揃える」と思い込まないこと**——`_source_from_fields()` は
+`App`（`signaly-notify.sh` が `NOTIFY_APP` から作る）を `Repository` より**先に**見るので、
+`NOTIFY_APP` を設定しているリポジトリの CI 通知の送信元は表示名になる（car-care は `Car Care`、
+portfolio は `Portfolio`、asset-manager は `Asset Manager`）。#204 以前はここが割れていた。
+
 **`接続元IP` というフィールド名を変えないこと。** `backend/login_origin.py` が
 「見覚えのない接続元からのログインか」を名前で引いて判定している（`login_format.FIELD_IP`）。
 名前を変えると警告が黙って効かなくなる。判定は送信元ごとに IPv4 は /24・IPv6 は /48 へ

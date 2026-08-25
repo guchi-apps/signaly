@@ -132,6 +132,22 @@ curl -X POST "$SIGNALY_WEBHOOK_URL" \
 **値が取れない項目は「不明」と書かず、フィールドごと落としてください。** 「不明」を並べると
 どのアプリでも同じ行数になる代わりに、実際に取れている情報が読み取れなくなります。
 
+**`source` は、そのリポジトリの CI / デプロイ通知の `NOTIFY_APP` と同じ値にしてください。**
+通知一覧の送信元チップは `notifications.source` の文字列そのままで分かれるため、ここが
+ずれると同じアプリが2つのチップに割れます。CI / デプロイ通知の送信元は
+[送信元（`source`）](#送信元source)の表のとおり `App` フィールド → `Repository` の順で
+決まり、`.github/scripts/signaly-notify.sh` は `NOTIFY_APP` が入っていれば必ず `App` を
+載せます。**つまり `Repository`（リポジトリ名）へ揃えるのは、`NOTIFY_APP` を設定して
+いないリポジトリだけです。**
+
+| リポジトリ | `NOTIFY_APP` | ログイン通知の `source` |
+|---|---|---|
+| signaly | `Signaly` | `Signaly` |
+| car-care | `Car Care` | `Car Care` |
+| asset-manager | `Asset Manager` | `Asset Manager` |
+| portfolio | `Portfolio` | `Portfolio` |
+| meisai-lab / clip-hive / subscription-lists / ops-dashboard | リポジトリ名 | リポジトリ名 |
+
 **フィールド名を変えないでください。** `接続元IP` は Signaly が「見覚えのない接続元か」を
 判定するために名前で引いています（次節）。名前を変えると警告が黙って効かなくなります。
 
