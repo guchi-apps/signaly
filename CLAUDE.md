@@ -32,6 +32,14 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 **Lint は無い。** CI（`.github/workflows/ci.yml`）も `backend` ジョブだけで、
 実行しているのは上記の unittest のみ。
 
+**シークレットの並びは `scripts/generate-workflow-env-block.sh` の出力と突き合わせて確かめる。**
+`.github/secrets-manifest.tsv` を編集したら、生成結果が `deploy.yml` のジョブ `env:` ブロックと
+一致することを確認する（このリポジトリに順序チェックのCIは無く、ズレても誰も気付かない）。
+
+```bash
+diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,85p' .github/workflows/deploy.yml)
+```
+
 ### エンドポイントは MySQL 無しで検証できる
 
 `backend/main.py` を import しても **DB へは接続しない**（`create_engine` は遅延接続で、

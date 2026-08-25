@@ -300,6 +300,7 @@ git commit -m "v1.0.1 をリリースする。"
 | `python scripts/gen_vapid_keys.py <mailto:...>` | VAPID キー生成 |
 | `bash scripts/test-notify.sh` | テスト通知送信 |
 | `bash scripts/sync-github-secrets.sh [--dry-run]` | 1Password → GitHub の secret / variable 同期 |
+| `bash scripts/generate-workflow-env-block.sh` | マニフェストからワークフローの `env:` ブロックを生成（`deploy.yml` との `diff` で突き合わせる） |
 
 ## 設計ガイド
 
