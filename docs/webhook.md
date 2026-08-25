@@ -163,8 +163,9 @@ const APP_NAME = "My App" // 通知に出すアプリ名。他アプリへ流用
 
 type SignalyField = { name: string; value: string; inline: boolean }
 
-// sv-SE ロケールは `2026-08-25 14:03:22` を返す。ja-JP だと `2026/8/25 14:03:22` に
-// なり、月日がゼロ埋めされず桁が揃わないため使わない。
+// sv-SE ロケールは `2026-08-25 14:03:22` を返す。ja-JP だと `2026/08/25 14:03:22` と
+// 区切りがスラッシュになり、共通フォーマットのハイフンにならないため使わない
+// （`2-digit` を渡しているのでゼロ埋め自体は ja-JP でもされる）。
 function jstTimestamp(): string {
     const text = new Intl.DateTimeFormat("sv-SE", {
         timeZone: "Asia/Tokyo",
