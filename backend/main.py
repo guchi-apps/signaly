@@ -19,6 +19,7 @@ from sqlalchemy import and_, func, or_
 
 import app_login
 import auth
+import login_origin
 import supabase_auth
 from database import (
     ApiKey,
@@ -403,6 +404,10 @@ async def _dispatch_notification(
         "source": normalize_source(source) or normalize_source(parsed.get("source")),
         "timestamp": _utc_iso(datetime.now(timezone.utc)),
     }
+
+    # ログイン通知だけ、見覚えのない接続元から届いていないかを照合して警告を付ける（#204）。
+    # 保存より前に行う——履歴・SSE・プッシュのどこから見ても同じ内容になるようにするため。
+    await asyncio.to_thread(login_origin.annotate, entry)
 
     await asyncio.to_thread(_save_notification, entry)
     _broadcast(channel_name, "notification", entry)

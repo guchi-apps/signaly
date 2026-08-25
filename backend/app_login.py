@@ -11,19 +11,17 @@ Supabase が送るペイロードは形式が固定で変更できないため�
 """
 
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+import login_format
 
 # auth.users の行にはパスワードハッシュや各種トークンが含まれる。
 # record を丸ごと通知へ出すと機密が Signaly の通知履歴に残るため、
 # 通知へ載せるキーは必ずこのモジュール内のホワイトリスト経由でのみ取り出す。
 TOKEN_HEADER = "x-signaly-token"
 
-MAX_VALUE_LEN = 500
+MAX_VALUE_LEN = login_format.MAX_VALUE_LEN
 APP_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-
-COLOR_LOGIN = "#57f287"   # 緑
-COLOR_SIGNUP = "#fbbf24"  # 黄
 
 # 通知しない理由（レスポンスの skipped に入る）
 SKIP_DELETE = "delete"
@@ -82,60 +80,30 @@ def _first_text(source: Dict[str, Any], keys: List[str]) -> Optional[str]:
     return None
 
 
-def _field(name: str, value: str, inline: bool) -> dict:
-    return {"name": name, "value": value, "inline": inline}
-
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
 def build_fields(record: Dict[str, Any]) -> List[dict]:
     """Supabase の行データから通知フィールドを組む（ホワイトリスト方式）。
 
-    並びは移行前のログイン通知（旧 login_notify.py）に合わせている。
+    名前・並び・日時の書式は `login_format` が持つ共通フォーマットに従う（#204）。
     auth.users には email / raw_*_meta_data が、auth.sessions には ip / user_agent が入る。
     どちらのテーブルが起点でも動くよう、存在する項目だけを拾う。
     """
     user_meta = _dict(record, "raw_user_meta_data")
     app_meta = _dict(record, "raw_app_meta_data")
 
-    fields: List[dict] = []
-
-    name = _first_text(user_meta, ["full_name", "name", "user_name"])
-    if name:
-        fields.append(_field("ユーザー", name, True))
-
-    email = _text(record.get("email")) or _text(user_meta.get("email"))
-    if email:
-        fields.append(_field("メール", email, True))
-
-    provider = _first_text(app_meta, ["provider"])
-    if provider:
-        fields.append(_field("プロバイダ", provider, True))
-
-    ip = _text(record.get("ip"))
-    if ip:
-        fields.append(_field("接続元IP", ip, True))
-
+    confirmed: Any = None
     if "email_confirmed_at" in record or "confirmed_at" in record:
-        confirmed = record.get("email_confirmed_at") or record.get("confirmed_at")
-        fields.append(_field("メール確認済", "はい" if confirmed else "いいえ", True))
+        confirmed = bool(record.get("email_confirmed_at") or record.get("confirmed_at"))
 
-    # メールもユーザー名も取れないとき（auth.sessions 起点）だけ ID を出す
-    if not email and not name:
-        user_id = _first_text(record, ["user_id", "id"])
-        if user_id:
-            fields.append(_field("ユーザーID", user_id, True))
-
-    timestamp = _first_text(record, ["last_sign_in_at", "created_at"]) or _now_utc()
-    fields.append(_field("日時", timestamp, False))
-
-    user_agent = _text(record.get("user_agent"))
-    if user_agent:
-        fields.append(_field("User-Agent", user_agent, False))
-
-    return fields
+    return login_format.build_fields(
+        user=_first_text(user_meta, ["full_name", "name", "user_name"]),
+        email=_text(record.get("email")) or _text(user_meta.get("email")),
+        provider=_first_text(app_meta, ["provider"]),
+        ip=_text(record.get("ip")),
+        email_verified=confirmed,
+        user_id=_first_text(record, ["user_id", "id"]),
+        timestamp=_first_text(record, ["last_sign_in_at", "created_at"]),
+        user_agent=_text(record.get("user_agent")),
+    )
 
 
 def _classify(payload: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -188,27 +156,19 @@ def parse_app_login_payload(app_id: str, payload: Dict[str, Any]) -> Optional[di
     record = record if isinstance(record, dict) else {}
     fields = build_fields(record)
 
-    if kind == "login":
-        title = f"🔐 {app_id} ログイン"
-        color = COLOR_LOGIN
-        message = ""
-    elif kind == "signup":
-        title = f"🎉 {app_id} 新規ユーザー登録"
-        color = COLOR_SIGNUP
-        message = ""
-    else:
-        schema = _text(payload.get("schema")) or "?"
-        table = _text(payload.get("table")) or "?"
-        event_type = _text(payload.get("type")) or "?"
-        title = f"🔔 {app_id} イベント"
-        color = None
-        message = f"{schema}.{table} / {event_type}"
+    if kind in (login_format.KIND_LOGIN, login_format.KIND_SIGNUP):
+        notification = login_format.build_payload(app_id, kind)
+        notification["fields"] = fields or None
+        return notification
 
+    schema = _text(payload.get("schema")) or "?"
+    table = _text(payload.get("table")) or "?"
+    event_type = _text(payload.get("type")) or "?"
     return {
-        "title": title,
-        "message": message,
+        "title": f"🔔 {app_id} イベント",
+        "message": f"{schema}.{table} / {event_type}",
         "level": "info",
-        "color": color,
+        "color": None,
         "fields": fields or None,
         # URL パスの app_id はアプリを一意に表すので、そのまま送信元にする。
         # ログイン通知を1本のチャンネルへ統合しても、どのアプリのログインかを絞り込める。
