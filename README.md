@@ -130,12 +130,12 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
 | `APP_URL` | ベース URL |
 | `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
-| `LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない）。全アプリ共通のログインチャンネル |
+| `SIGNALY_LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない）。全アプリ共通のログインチャンネル |
 | `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |
 | `TUNNEL_NAME` / `TUNNEL_HOSTNAME` | Cloudflare Named Tunnel（開発用） |
 
-本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（Supabase / SECRET_KEY / VAPID 含む）。`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` は他アプリと共通のため organization の variable（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取ります。CI / デプロイ通知の `SIGNALY_WEBHOOK_URL` も、全リポジトリで1つのチャンネルへ集約したため organization の secret から取ります。ローカル開発は `.env.local`（1Password 不要）を使い、開発用 Supabase プロジェクトを参照します。
+本番 VPS では GitHub の secret / variable の値を GitHub Actions がデプロイ時に `.env` へ同期します（Supabase / SECRET_KEY / VAPID 含む）。`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` は他アプリと共通のため organization の variable（`SUPABASE_PROJECT_URL` / `SUPABASE_PUBLISHABLE_KEY`）から取ります。CI / デプロイ通知の `SIGNALY_WEBHOOK_URL` と、ログイン通知の `SIGNALY_LOGIN_WEBHOOK_URL` も、全リポジトリで1つのチャンネルへ集約したため organization の secret から取ります。ローカル開発は `.env.local`（1Password 不要）を使い、開発用 Supabase プロジェクトを参照します。
 
 ## Webhook
 
@@ -222,7 +222,7 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 |---------|-----------|------|
 | `signaly` | `app-url` | `https://signaly.gucchii.com/` |
 | `signaly` | `allowed-emails` / `secret-key` | ログイン許可・SSE 用 Cookie の署名 |
-| `signaly` | `login-webhook-url` | ログイン通知（Signaly Webhook URL 全文。通知先は全アプリ共通のチャンネル） |
+| `Notify` | `login-webhook-url` | ログイン通知（全アプリ共通。GitHub 側は organization の `SIGNALY_LOGIN_WEBHOOK_URL`） |
 | `Supabase` | `project-url` / `publishable-key` | Supabase Auth（全アプリ共通。GitHub 側は organization の variable） |
 | `signaly` | `vapid-*` | Web Push |
 | `signaly` | `target-dir` / `db-name` | デプロイ先・DB 名 |
@@ -231,7 +231,7 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 | `githubaction-sshkey` | `private_key` | GitHub Actions 用 SSH 秘密鍵 |
 | `Notify` | `ci-webhook-url` | CI / デプロイ通知（全アプリ共通。GitHub 側は organization の `SIGNALY_WEBHOOK_URL`） |
 
-`ci-webhook-url` / `login-webhook-url` は Signaly 上の **Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）です。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `LOGIN_WEBHOOK_URL` へ POST し、**どちらも通知先は全アプリ共通のチャンネル**で、送信元（アプリ名）で見分けます。CI 側は集約済みで値を organization の `SIGNALY_WEBHOOK_URL` に1つだけ持ちます（`Notify` アイテム）。ログイン側も同じ形へ寄せる予定です（guchi-apps/issue-deck#2286）。
+`ci-webhook-url` / `login-webhook-url` は Signaly 上の **Webhook URL** 画面で表示される URL（例: `https://signaly.gucchii.com/webhook/...`）です。CI / デプロイは `.github/scripts/signaly-notify.sh`、ログインはバックエンドが `SIGNALY_LOGIN_WEBHOOK_URL` へ POST し、**どちらも通知先は全アプリ共通のチャンネル**で、送信元（アプリ名）で見分けます。どちらも値は `Notify` アイテムに1つだけ持ち、GitHub 側は organization の secret（`SIGNALY_WEBHOOK_URL` / `SIGNALY_LOGIN_WEBHOOK_URL`）から取ります（guchi-apps/issue-deck#2286・#2287）。
 
 **Signaly 自身のログイン通知に `/notify/app-login/*` は使えません。** Supabase プロジェクトは複数アプリで共有しており、`auth.users` に掛けた Database Webhook は他アプリのログインでも発火するため、どのアプリへのログインかを区別できないためです（`{app_id}` は表示名にすぎません）。
 
@@ -300,6 +300,7 @@ git commit -m "v1.0.1 をリリースする。"
 | `python scripts/gen_vapid_keys.py <mailto:...>` | VAPID キー生成 |
 | `bash scripts/test-notify.sh` | テスト通知送信 |
 | `bash scripts/sync-github-secrets.sh [--dry-run]` | 1Password → GitHub の secret / variable 同期 |
+| `bash scripts/generate-workflow-env-block.sh` | マニフェストからワークフローの `env:` ブロックを生成（`deploy.yml` との `diff` で突き合わせる） |
 
 ## 設計ガイド
 

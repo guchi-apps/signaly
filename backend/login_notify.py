@@ -20,7 +20,7 @@ from fastapi import Request
 
 logger = logging.getLogger(__name__)
 
-LOGIN_WEBHOOK_URL = os.getenv("LOGIN_WEBHOOK_URL", "").strip()
+SIGNALY_LOGIN_WEBHOOK_URL = os.getenv("SIGNALY_LOGIN_WEBHOOK_URL", "").strip()
 APP_NAME = "Signaly"  # 通知タイトルに使うアプリ名。他アプリへ流用する場合はここだけ変更する
 
 
@@ -94,11 +94,11 @@ def build_login_notification(
 
 
 async def send_login_notification(payload: dict) -> None:
-    if not LOGIN_WEBHOOK_URL:
+    if not SIGNALY_LOGIN_WEBHOOK_URL:
         return
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(LOGIN_WEBHOOK_URL, json=payload)
+            response = await client.post(SIGNALY_LOGIN_WEBHOOK_URL, json=payload)
             response.raise_for_status()
     except Exception:
         logger.exception("ログイン通知の送信に失敗しました")
