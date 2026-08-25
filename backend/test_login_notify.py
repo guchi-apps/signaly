@@ -74,7 +74,7 @@ class TestBuildLoginNotification(unittest.TestCase):
 
 class TestSendLoginNotification(unittest.IsolatedAsyncioTestCase):
     async def test_skips_when_url_unset(self):
-        with patch("login_notify.LOGIN_WEBHOOK_URL", ""):
+        with patch("login_notify.SIGNALY_LOGIN_WEBHOOK_URL", ""):
             await send_login_notification({"title": "test"})
 
     async def test_posts_payload(self):
@@ -86,7 +86,7 @@ class TestSendLoginNotification(unittest.IsolatedAsyncioTestCase):
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
         payload = {"title": "🔐 Signaly ログイン", "fields": []}
-        with patch("login_notify.LOGIN_WEBHOOK_URL", "https://example.com/webhook/abc"):
+        with patch("login_notify.SIGNALY_LOGIN_WEBHOOK_URL", "https://example.com/webhook/abc"):
             with patch("login_notify.httpx.AsyncClient", return_value=mock_client):
                 await send_login_notification(payload)
 

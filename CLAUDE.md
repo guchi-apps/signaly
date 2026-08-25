@@ -32,6 +32,14 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 **Lint は無い。** CI（`.github/workflows/ci.yml`）も `backend` ジョブだけで、
 実行しているのは上記の unittest のみ。
 
+**シークレットの並びは `scripts/generate-workflow-env-block.sh` の出力と突き合わせて確かめる。**
+`.github/secrets-manifest.tsv` を編集したら、生成結果が `deploy.yml` のジョブ `env:` ブロックと
+一致することを確認する（このリポジトリに順序チェックのCIは無く、ズレても誰も気付かない）。
+
+```bash
+diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,85p' .github/workflows/deploy.yml)
+```
+
 ### エンドポイントは MySQL 無しで検証できる
 
 `backend/main.py` を import しても **DB へは接続しない**（`create_engine` は遅延接続で、
@@ -109,13 +117,21 @@ GitHub secret に Webhook URL として散らばっており、統合のたび�
 直接引かないこと**——別名を解決できず、統合済みのURLが404になる。
 
 **ログイン通知も全アプリ共通の1チャンネルへ集約する（#192）。** CI・デプロイ通知
-（guchi-apps/issue-deck#2255）と同じ方針。**集約の手段はチャンネル統合（merge）で、
-送信側の Webhook URL は差し替えない。** 統合すれば旧チャンネルIDの URL がそのまま
-共通チャンネルへ届き、送信元も保たれるため、Signaly 自身も含めて secret の変更は要らない。
-将来 organization secret `SIGNALY_LOGIN_WEBHOOK_URL`（1Password の正は
-`op://apps/Notify/login-webhook-url`）へ寄せる予定だが、**それは organization secret が
-実在してからにすること**——`LOGIN_WEBHOOK_URL` が空でも `deploy.yml` は空値を `.env` へ書き、
-`login_notify.py` は空なら例外もログも出さずに `return` する。**通知が止まっても何も表面化しない。**
+（guchi-apps/issue-deck#2255）と同じ方針。既存チャンネルを寄せる手段はチャンネル統合（merge）で、
+統合すれば旧チャンネルIDの URL がそのまま共通チャンネルへ届き、送信元も保たれる。
+
+**Signaly 自身のログイン通知の値は organization secret `SIGNALY_LOGIN_WEBHOOK_URL`
+（可視性 all・1Password の正は `op://apps/Notify/login-webhook-url`）から受け取る（#200）。**
+`.github/secrets-manifest.tsv` の該当行は `inherit` で、`scripts/sync-github-secrets.sh` は
+スキップする。**同名の repository secret を作らないこと**——repository secret は同名の
+organization secret を覆い隠すため、アプリ別チャンネルへ戻る。旧名 `LOGIN_WEBHOOK_URL` の行は
+本番の `.env` に残るが、`deploy.yml` の `sync_env_var` は書き込む鍵しか触らず、アプリはもう
+読まないため害はない。
+
+**通知先の設定ミスは何も表面化しない。** URL が空でも `deploy.yml` は空値を `.env` へ書き、
+`login_notify.py` は空なら例外もログも出さずに `return` する。環境変数名を変えたときは、
+`deploy.yml`（`env:` / `envs:` / `b64` / `sync_env_var` の4か所）・`.env.example` /
+`.env.local.example`・`backend/login_notify.py` を必ず揃えること。
 
 **アプリ固有の Webhook URL を共通チャンネルのURLへ差し替えるときは、送信側が
 ペイロードに `source` を入れているか先に確かめること。** 統合（merge）で寄せた場合は
