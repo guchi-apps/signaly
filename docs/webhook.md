@@ -94,6 +94,166 @@ curl -X POST "$SIGNALY_WEBHOOK_URL" \
 }
 ```
 
+### ログイン通知の共通フォーマット
+
+**ログイン通知はこの形で送ってください。この節がフォーマットの正です（#204）。**
+1本のチャンネルへ集約している以上、送る側がばらばらの形で送ると、同じ種類の通知に
+見えません。**Signaly は受け取った通知を整え直しません**——届いたものはそのまま保存する
+ので、揃えるのは送る側の役目です。
+
+```jsonc
+{
+  "source": "My App",              // アプリ名。送信元バッジと絞り込みに使う
+  "title":  "🔐 My App ログイン",   // 新規登録は "🎉 My App 新規ユーザー登録"
+  "level":  "info",
+  "color":  "#57f287",             // 新規登録は "#fbbf24"
+  "fields": [
+    { "name": "ユーザー",   "value": "guchi",             "inline": true  },
+    { "name": "メール",     "value": "guchi@example.com", "inline": true  },
+    { "name": "プロバイダ", "value": "google",            "inline": true  },
+    { "name": "接続元IP",   "value": "203.0.113.24",      "inline": true  },
+    { "name": "日時",       "value": "2026-08-25 14:03:22 JST", "inline": false },
+    { "name": "User-Agent", "value": "Mozilla/5.0 …",     "inline": false }
+  ]
+}
+```
+
+| 項目 | 出す条件 | 配置 |
+|---|---|---|
+| `ユーザー` | 表示名が取れたときだけ | 横並び 1番目 |
+| `メール` | 取れたときだけ | 横並び 2番目 |
+| `プロバイダ` | 取れたときだけ（`google` など） | 横並び 3番目 |
+| `接続元IP` | 取れたときだけ | 横並び 4番目 |
+| `メール確認済` | 判定できるときだけ（`はい` / `いいえ`） | 横並び 5番目 |
+| `ユーザーID` | メールも表示名も取れなかったときだけ | 横並び 6番目 |
+| `日時` | 常に。`YYYY-MM-DD HH:MM:SS JST` 固定 | 下段 1行 |
+| `User-Agent` | 取れたときだけ。500文字で切る | 下段 1行 |
+
+**値が取れない項目は「不明」と書かず、フィールドごと落としてください。** 「不明」を並べると
+どのアプリでも同じ行数になる代わりに、実際に取れている情報が読み取れなくなります。
+
+**フィールド名を変えないでください。** `接続元IP` は Signaly が「見覚えのない接続元か」を
+判定するために名前で引いています（次節）。名前を変えると警告が黙って効かなくなります。
+
+#### Next.js（App Router）から送る
+
+**変えるのは `APP_NAME` の1行だけです。** 残りは全アプリ共通なので、そのままコピーしてください。
+
+```typescript
+// src/lib/signaly.ts
+import { headers } from "next/headers"
+
+const APP_NAME = "My App" // 通知に出すアプリ名。他アプリへ流用する場合はここだけ変更する
+
+type SignalyField = { name: string; value: string; inline: boolean }
+
+// sv-SE ロケールは `2026-08-25 14:03:22` を返す。ja-JP だと `2026/8/25 14:03:22` に
+// なり、月日がゼロ埋めされず桁が揃わないため使わない。
+function jstTimestamp(): string {
+    const text = new Intl.DateTimeFormat("sv-SE", {
+        timeZone: "Asia/Tokyo",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit",
+        hour12: false,
+    }).format(new Date())
+    return `${text} JST`
+}
+
+export async function notifySignalyLogin(options: {
+    email?: string | null
+    name?: string | null
+    provider?: string | null
+}): Promise<void> {
+    const webhookUrl = process.env.SIGNALY_LOGIN_WEBHOOK_URL
+    if (!webhookUrl) return
+
+    const headersList = await headers()
+    const ip =
+        headersList.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+        headersList.get("x-real-ip") ??
+        null
+    const userAgent = headersList.get("user-agent")
+
+    // 値が取れない項目はフィールドごと落とす（「不明」を並べない）
+    const fields: SignalyField[] = []
+    const inline = (name: string, value: string | null | undefined) => {
+        if (value) fields.push({ name, value: value.slice(0, 500), inline: true })
+    }
+    inline("ユーザー", options.name)
+    inline("メール", options.email)
+    inline("プロバイダ", options.provider)
+    inline("接続元IP", ip)
+    fields.push({ name: "日時", value: jstTimestamp(), inline: false })
+    if (userAgent) {
+        fields.push({ name: "User-Agent", value: userAgent.slice(0, 500), inline: false })
+    }
+
+    try {
+        await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                source: APP_NAME,
+                title: `🔐 ${APP_NAME} ログイン`,
+                level: "info",
+                color: "#57f287",
+                fields,
+            }),
+        })
+    } catch (error) {
+        console.error("[signaly] ログイン通知の送信に失敗しました:", error)
+    }
+}
+```
+
+認証コールバック（`src/app/auth/callback/route.ts` など）から、ログイン成功後に呼びます。
+
+```typescript
+await notifySignalyLogin({ email: user.email, name: user.user_metadata?.full_name, provider: "google" })
+```
+
+#### Python（FastAPI）から送る
+
+参照実装は Signaly 自身の [`backend/login_notify.py`](https://github.com/guchi-apps/signaly/blob/main/backend/login_notify.py)
+と、フォーマットを組む [`backend/login_format.py`](https://github.com/guchi-apps/signaly/blob/main/backend/login_format.py) です。
+`login_format.py` をコピーして、呼び出し側でアプリ名を渡してください。
+
+```python
+import login_format
+
+payload = login_format.build_payload(
+    "My App",
+    user=display_name,
+    email=email,
+    provider="google",
+    ip=client_ip(request),
+    user_agent=request.headers.get("user-agent"),
+)
+```
+
+### 見覚えのない接続元からのログイン
+
+**Signaly は、ログイン通知の `接続元IP` をアプリごとに覚えます。** 覚えていない範囲から
+届いたときだけ、その通知を黄色（`#fbbf24`・`level: warning`）にして、タイトルを
+`⚠️ My App ログイン（初めての接続元）` へ書き換えます。プッシュ通知にもこのタイトルが
+そのまま出るので、画面を開かなくても気づけます。
+
+| 届いた接続元 | どうなるか |
+|---|---|
+| 覚えている範囲 | そのまま。最終利用日時だけ更新する |
+| 覚えていない範囲 | 黄色 ＋ タイトルに `⚠️`。以後は覚える |
+| そのアプリで初めての通知 | 覚えるだけで警告しない |
+| `接続元IP` が無い通知 | 判定しない |
+
+- **覚えるのは範囲だけで、完全なIPは保存しません。** IPv4 は `/24`、IPv6 は `/48` に
+  丸めた値（`203.0.113.0/24`）だけを持ちます
+- **範囲で覚えるのは、モバイル回線がIPを毎回変えるためです。** 完全一致で覚えると毎回
+  警告になり、警告の意味がなくなります。範囲なら回線が変わった初回だけ警告になります
+- **アプリごとに別々に覚えます。** 送信元（`source`）が単位で、付いていない通知は
+  チャンネル単位になります
+- 対象はタイトルに「ログイン」を含む通知だけです。新規ユーザー登録は接続元が初めてで
+  当たり前なので判定しません。CI / デプロイ通知も対象外です
+
 ---
 
 ## Discord Webhook 形式（推奨）
@@ -552,7 +712,8 @@ Supabase の Database Webhooks が送る形をそのまま受け取ります。
 
 ### 通知に出る項目
 
-受け取った行データのうち、**次の項目だけ**を通知に載せます。
+受け取った行データのうち、**次の項目だけ**を通知に載せます。名前・並び・日時の書式は
+[ログイン通知の共通フォーマット](#ログイン通知の共通フォーマット)に従います。
 
 | 表示名 | 取得元 |
 |---|---|
@@ -562,7 +723,7 @@ Supabase の Database Webhooks が送る形をそのまま受け取ります。
 | 接続元IP | `ip` |
 | メール確認済 | `email_confirmed_at` / `confirmed_at` の有無 |
 | ユーザーID | `user_id` / `id`（メールもユーザー名も取れなかった場合のみ） |
-| 日時 | `last_sign_in_at` → `created_at` → 受信時刻 |
+| 日時 | `last_sign_in_at` → `created_at` → 受信時刻（`YYYY-MM-DD HH:MM:SS JST` へ揃える） |
 | User-Agent | `user_agent` |
 
 URL パスの `<app_id>` はタイトル（`🔐 <app_id> ログイン`）に加えて

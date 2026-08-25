@@ -1,7 +1,18 @@
 import os
 from urllib.parse import quote
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Session
 
 _DB_USER = os.environ.get("DB_USER", "user")
@@ -122,6 +133,33 @@ class Notification(Base):
     # 送信元（アプリ名・リポジトリ名など）。用途別に統合したチャンネルの中で発信元を見分ける。
     # 過去の行は NULL のままなので、参照側は必ず未設定を許容すること。
     source = Column(String(100), nullable=True, index=True)
+
+
+class LoginOrigin(Base):
+    """ログイン通知で見たことのある接続元（#204）。
+
+    見覚えのない接続元からのログインだけを黄色で警告するために使う。判定は
+    `backend/login_origin.py`。
+
+    **完全なIPは保存しない。** `prefix` に入るのは IPv4 なら /24、IPv6 なら /48 に
+    丸めた範囲（`203.0.113.0/24`）だけ。モバイル回線は接続のたびにIPが変わるため、
+    完全一致で覚えると毎回警告になって意味がなくなる。
+
+    `scope` はアプリを表す送信元（`notifications.source`）。送信元が付かない通知は
+    チャンネル名を入れる。
+    """
+
+    __tablename__ = "login_origins"
+
+    id = Column(String(36), primary_key=True)
+    scope = Column(String(100), nullable=False, index=True)
+    prefix = Column(String(64), nullable=False)
+    first_seen_at = Column(DateTime(timezone=True), nullable=False)
+    last_seen_at = Column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("scope", "prefix", name="uq_login_origins_scope_prefix"),
+    )
 
 
 class NotificationSetting(Base):

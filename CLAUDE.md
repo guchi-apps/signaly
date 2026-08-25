@@ -137,11 +137,27 @@ organization secret を覆い隠すため、アプリ別チャンネルへ戻る
 ペイロードに `source` を入れているか先に確かめること。** 統合（merge）で寄せた場合は
 `channel_aliases.source` が効くため送信側を変えなくてもアプリを区別できるが
 （`backend/main.py` の `source=explicit or parsed.get("source") or alias_source`）、
-共通チャンネルのIDを直接叩くと別名を経由せず、この救済が無くなる。`login_notify.py` は
-`source` を持っているが、他アプリの Next.js テンプレート（`notifySignalyLogin`）は
-Discord 形式の `embeds` だけで `source` も `username` も持たない。**先に `source` を
+共通チャンネルのIDを直接叩くと別名を経由せず、この救済が無くなる。**先に `source` を
 足してから差し替えること**——順序を逆にすると、集約した瞬間にどのアプリのログインか
-分からなくなる。
+分からなくなる。#204 で全アプリの `notifySignalyLogin` を共通フォーマット（`source` 付き）
+へ揃えたが、**そのPRがマージされていないアプリでは依然 `source` が付かない**ので、
+差し替える前にそのリポジトリの `signaly.ts` を実際に見て確かめること。
+
+**ログイン通知の形の正は `docs/webhook.md` の「ログイン通知の共通フォーマット」（#204）。**
+1本のチャンネルへ集約している以上、送る側がばらばらの形で送ると同じ種類の通知に見えない。
+**Signaly は受け取った通知を整え直さない**——届いたものはそのまま保存するので、揃えるのは
+送る側の役目になる。Signaly 自身が送る2経路（`backend/login_notify.py` と
+`backend/app_login.py`）は `backend/login_format.py` を共有していて、他アプリ向けの
+コピー元テンプレート（Next.js / Python）も `docs/webhook.md` に置いてある。**受信側で
+整形し直す作りにしないこと**——形の定義が送信側と受信側の2か所に散り、通知の中身が
+「送信側の書いたとおり」でなくなる。
+
+**`接続元IP` というフィールド名を変えないこと。** `backend/login_origin.py` が
+「見覚えのない接続元からのログインか」を名前で引いて判定している（`login_format.FIELD_IP`）。
+名前を変えると警告が黙って効かなくなる。判定は送信元ごとに IPv4 は /24・IPv6 は /48 へ
+丸めた範囲で覚える（`login_origins` テーブル）。**完全一致で覚えないこと**——モバイル回線は
+接続のたびにIPが変わるため毎回警告になり、意味がなくなる。**そのアプリで1件目の通知は
+覚えるだけで警告しない**（全アプリの1回目が必ず黄色になるのを防ぐ）。
 
 **ログイン通知の集約に Database Webhooks（`/notify/app-login/{app_id}`）を使わないこと。**
 上記のとおり `{app_id}` は表示名にすぎず、Supabase プロジェクトを共有している以上、
