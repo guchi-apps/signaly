@@ -122,7 +122,7 @@ class AppLoginEndpointTest(unittest.TestCase):
         self.assertEqual(values["ユーザー"], "Guchi")
         self.assertEqual(values["メール"], "you@example.com")
         self.assertEqual(values["プロバイダ"], "google")
-        self.assertEqual(values["日時"], "2026-08-17T10:00:00Z")
+        self.assertEqual(values["日時"], "2026-08-17 19:00:00 JST")  # UTC の値を JST 表記へ揃える（#204）
 
     def test_secrets_never_reach_the_stored_notification(self):
         self.post("/notify/app-login/ops-dashboard", {"X-Signaly-Token": CHANNEL_ID})

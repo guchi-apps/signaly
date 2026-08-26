@@ -85,7 +85,7 @@ class TestBuildFields(unittest.TestCase):
         self.assertEqual(values["メール"], "you@example.com")
         self.assertEqual(values["プロバイダ"], "google")
         self.assertEqual(values["メール確認済"], "はい")
-        self.assertEqual(values["日時"], "2026-08-17T10:00:00Z")
+        self.assertEqual(values["日時"], "2026-08-17 19:00:00 JST")  # UTC の値を JST 表記へ揃える（#204）
 
     def test_secrets_are_never_exposed(self):
         serialized = json.dumps(build_fields(USERS_RECORD), ensure_ascii=False)
@@ -103,7 +103,7 @@ class TestBuildFields(unittest.TestCase):
         self.assertEqual(values["User-Agent"], "Mozilla/5.0 (iPhone)")
         # メールもユーザー名も取れないときだけ ID を出す
         self.assertEqual(values["ユーザーID"], SESSIONS_RECORD["user_id"])
-        self.assertEqual(values["日時"], "2026-08-17T10:00:00Z")
+        self.assertEqual(values["日時"], "2026-08-17 19:00:00 JST")  # UTC の値を JST 表記へ揃える（#204）
 
     def test_user_id_is_omitted_when_identity_is_known(self):
         self.assertNotIn("ユーザーID", _fields_dict(build_fields(USERS_RECORD)))

@@ -8,15 +8,20 @@ Supabase プロジェクトは複数アプリで共有しており、`auth.users
 
 そのため Signaly 自身のログインは、フロントエンドが認証コールバックを終えた時点で
 呼ぶ `POST /auth/session`（`event: "login"`）を起点に、ここから通知する。
+
+**通知の形は `login_format` に寄せている（#204）。** ログイン通知は全アプリで1本の
+チャンネルへ集約しているため、ここだけ独自の形にすると並べたときに揃わない。
+共通フォーマットの正は `docs/webhook.md`。
 """
 
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Dict
 
 import httpx
 from fastapi import Request
+
+import login_format
 
 logger = logging.getLogger(__name__)
 
@@ -56,41 +61,15 @@ def build_login_notification(
     user_info: Dict[str, Any],
     request: Request,
 ) -> dict:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    ua = (request.headers.get("user-agent") or "unknown")[:500]
-
-    fields = []
-    name = user_info.get("name")
-    if name:
-        fields.append({"name": "ユーザー", "value": str(name), "inline": True})
-    fields.append({"name": "メール", "value": email, "inline": True})
-
-    provider = user_info.get("provider")
-    if provider:
-        fields.append({"name": "プロバイダ", "value": str(provider), "inline": True})
-
-    fields.append({"name": "接続元IP", "value": client_ip(request), "inline": True})
-
-    verified = user_info.get("verified_email")
-    if verified is not None:
-        fields.append({
-            "name": "メール確認済",
-            "value": "はい" if verified else "いいえ",
-            "inline": True,
-        })
-
-    fields.append({"name": "日時", "value": now, "inline": False})
-    fields.append({"name": "User-Agent", "value": ua, "inline": False})
-
-    return {
-        "title": f"🔐 {APP_NAME} ログイン",
-        "message": "",
-        "level": "info",
-        "color": "#57f287",
-        "fields": fields,
-        # ログイン通知を他アプリと同じチャンネルへ集約しても見分けられるようにする
-        "source": APP_NAME,
-    }
+    return login_format.build_payload(
+        APP_NAME,
+        user=user_info.get("name"),
+        email=email,
+        provider=user_info.get("provider"),
+        ip=client_ip(request),
+        email_verified=user_info.get("verified_email"),
+        user_agent=request.headers.get("user-agent") or "unknown",
+    )
 
 
 async def send_login_notification(payload: dict) -> None:
