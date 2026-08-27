@@ -17,7 +17,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, or_
 
-import app_login
 import auth
 import login_origin
 import supabase_auth
@@ -852,42 +851,17 @@ async def receive_webhook(channel_id: str, request: Request, source: Optional[st
     return {"ok": True, "id": entry["id"]}
 
 
-# ── アプリのログイン通知（Supabase Database Webhooks 用）──────────────────────
-# Supabase Auth へ移行したアプリは OAuth コールバックを自分のバックエンドで処理しないため、
-# アプリ側のコードにログイン通知を差し込めない。Supabase 側の Database Webhooks を
-# ここへ向けることで、アプリのコードを一切変更せずに通知を集約する。
+# ── 廃止: /notify/app-login/{app_id}（Supabase Database Webhooks 用）─────────
+# Supabase プロジェクトは複数アプリで共有していて `auth.users` / `auth.sessions` は
+# プロジェクトに1つしかない。そこへ掛けた Database Webhook は**どのアプリへのログインでも**
+# 発火し、URL パスの {app_id} は設定時に選んだ表示名にすぎないため、他アプリのログインが
+# 常に同じアプリ名で通知されていた（#209）。区別できる情報がペイロードに無いので、
+# 受信側で直しようがなく、経路ごと削除した。
 #
-# 宛先と認証はどちらもチャンネルID（token_urlsafe(16)）で行う。/webhook/{channel_id} が
-# 既に「チャンネルIDが宛先の識別子であり事実上の資格情報」というモデルなので、
-# 新しいシークレットを増やさずそれに揃える。URL パスの {app_id} は表示名にのみ使う。
-
-@app.post("/notify/app-login/{app_id}")
-async def receive_app_login(app_id: str, request: Request, token: Optional[str] = None):
-    if not app_login.valid_app_id(app_id):
-        raise HTTPException(status_code=400, detail="app_id が不正です")
-
-    presented = app_login.extract_token(request.headers, token)
-    if not presented:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    target = await asyncio.to_thread(_resolve_webhook_target, presented)
-    if target is None:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    channel_name, _alias_source = target
-
-    raw = await _read_webhook_body(request)
-    try:
-        parsed = app_login.parse_app_login_payload(app_id, raw)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if parsed is None:
-        # ログインではないイベント（DELETE・last_sign_in_at が動かない UPDATE）。
-        # Supabase 側のリトライ・エラーログを増やさないよう 200 で返す。
-        return {"ok": True, "skipped": app_login.skip_reason(raw)}
-
-    entry = await _dispatch_notification(channel_name, parsed)
-    return {"ok": True, "id": entry["id"]}
+# 代わりに、アプリは自分のフロントエンドの認証コールバックから自分のバックエンドを叩き、
+# そこから `source` 付きで共通チャンネルへ送る（Signaly 自身は
+# `frontend/auth/callback.html` → `POST /auth/session` → `backend/login_notify.py`）。
+# **この経路を復活させないこと。** 詳細は docs/webhook.md「アプリのログイン通知」を参照。
 
 
 # ── API（要認証）─────────────────────────────────────────────────────────────
