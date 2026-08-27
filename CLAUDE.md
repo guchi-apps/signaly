@@ -251,9 +251,19 @@ DELETE しか持たない（正は `guchi-apps/vps` の `docs/web-stack.md`）�
 uvicorn まで DDL 権限を持つ。未設定ならアプリ用ユーザーへフォールバックする
 （ローカル向け。本番では必ず渡る）。
 
-**マイグレーション専用ユーザーには、DBごとに GRANT が要る。** `app_signaly` への DDL 権限が
-無ければ `migrate_db.py` が GRANT 文を添えて失敗する。付与はVPS上の手作業で、
-`guchi-apps/vps` の `mysql/` はデプロイの対象外（`deploy.yml` の `paths` に無い）。
+**マイグレーション専用ユーザーには `app_%` へのワイルドカード GRANT が既に付いている。DBごとの
+個別 GRANT は要らない。** VPS の MySQL では
+`GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, REFERENCES, INDEX, ALTER ON app_%.*`
+が付与済みで、MySQL は**DB名の部分に限り** `_` / `%` をパターンとして解釈する
+（`mysql.db` に LIKE 相当で格納される）。そのため `app_signaly` を含む
+`app_` 始まりのDBは、後から作っても自動的に対象になる（#205 で実機の `SHOW GRANTS` により確認、
+2026-08-27）。**アプリを追加するたびに GRANT を付与する手作業Issueを起票しないこと。**
+
+個別の GRANT が要るのは**DB名が `app_` で始まらない場合**だけ。権限が無ければ `migrate_db.py` が
+GRANT 文を添えて失敗するので、そのメッセージが出たときにVPS上で手作業で付与する
+（`guchi-apps/vps` の `mysql/` はデプロイの対象外で、`deploy.yml` の `paths` に無いため
+コードとしては流せない）。現状の確認は VPS 上の
+`sudo mysql -N -e "SHOW GRANTS FOR '<マイグレーション専用ユーザー>'@'localhost'"`。
 
 ### バージョン管理
 
