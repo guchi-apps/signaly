@@ -218,6 +218,9 @@ def _build_payload(entry: Dict[str, Any]) -> str:
             "body": _notification_body(entry),
             "id": notif_id,
             "channel": channel,
+            # 既読同期（type: "read"）で「どこまで消してよいか」を判定するため、
+            # 通知そのものの時刻を Service Worker まで運ぶ（#216）。
+            "ts": entry.get("timestamp") or "",
             "url": url,
         },
         ensure_ascii=False,
@@ -305,7 +308,7 @@ def _normalize_push_key(value: str) -> str:
 
 
 def _deliver_push_result(
-    sub: Dict[str, str], payload: str, vapid: Vapid02
+    sub: Dict[str, str], payload: str, vapid: Vapid02, ttl: int = 300
 ) -> Tuple[bool, Optional[int], Optional[str]]:
     subscription_info = {
         "endpoint": sub["endpoint"],
@@ -320,7 +323,7 @@ def _deliver_push_result(
             data=payload,
             vapid_private_key=vapid,
             vapid_claims=dict(_vapid_claims_for_endpoint(sub["endpoint"])),
-            ttl=300,
+            ttl=ttl,
             timeout=30,
         )
         return True, None, None
@@ -405,3 +408,55 @@ def send_push_notifications(entry: Dict[str, Any]) -> None:
             continue
         if not _deliver_push(sub, payload, vapid):
             pass
+
+
+def _build_read_payload(channels: List[Dict[str, Any]]) -> str:
+    return json.dumps(
+        {
+            "type": "read",
+            "channels": channels,
+        },
+        ensure_ascii=False,
+    )
+
+
+def send_read_sync(
+    email: str,
+    channels: List[Dict[str, Any]],
+    exclude_endpoint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """既読にしたことを本人の他端末へ配る（#216）。
+
+    既読は端末ごとの localStorage にしか無いため、PC で読んでもスマホのロック画面には
+    通知が残り続ける。表示済みの OS 通知を閉じられるのは、それを出した端末の Service
+    Worker だけなので、「どのチャンネルをいつまで読んだか」を Web Push で配って閉じさせる。
+
+    通知を表示しない Push なので、無駄打ちしないこと。呼ぶのは未読があるチャンネルを
+    既読にしたときだけで、複数チャンネルは1通にまとめて渡す（ブラウザによっては、通知を
+    出さない Push を繰り返すと代替通知を出したり購読を失効させたりする）。
+    """
+    if not push_configured():
+        return {"sent": 0, "failed": 0, "error": "not_configured"}
+    if not channels:
+        return {"sent": 0, "failed": 0}
+
+    subs = [
+        s
+        for s in _fetch_subscriptions_for_email(email)
+        if not exclude_endpoint or s["endpoint"] != exclude_endpoint
+    ]
+    if not subs:
+        return {"sent": 0, "failed": 0}
+
+    payload = _build_read_payload(channels)
+    vapid = _load_vapid()
+    sent = 0
+    failed = 0
+    for sub in subs:
+        # TTL は短く。届くのが遅れた既読同期は、その間に届いた新しい通知まで
+        # 消しかねないので、溜め込まずに捨てさせる。
+        if _deliver_push_result(sub, payload, vapid, ttl=60)[0]:
+            sent += 1
+        else:
+            failed += 1
+    return {"sent": sent, "failed": failed}

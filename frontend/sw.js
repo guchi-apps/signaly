@@ -25,6 +25,49 @@ async function incrementAppBadgeCount() {
   await setAppBadgeCount(count)
 }
 
+async function decrementAppBadgeCount(by) {
+  const n = Number(by) || 0
+  if (n <= 0) return
+  if (!('setAppBadge' in self.registration)) return
+  const cache = await caches.open(BADGE_CACHE)
+  const res = await cache.match('app-badge-count')
+  const count = res ? parseInt(await res.text(), 10) : 0
+  await setAppBadgeCount(Math.max(0, count - n))
+}
+
+// 別の端末で既読にしたチャンネルの通知を、この端末からも消す（#216）。
+// 表示済みの通知を閉じられるのは、それを出した端末の Service Worker だけ。
+async function closeReadNotifications(channel, until) {
+  if (!channel) return 0
+  const limit = Number(until) || 0
+  const shown = await self.registration.getNotifications()
+  let closed = 0
+  for (const notification of shown) {
+    const data = notification.data || {}
+    if (data.channel !== channel) continue
+    // 既読にした後に届いた通知まで消さないよう、通知自身の時刻で絞る。
+    // 時刻を持たない通知（旧バージョンが出したもの）は消す側に倒す。
+    const ts = data.ts ? Date.parse(data.ts) : NaN
+    if (limit && !Number.isNaN(ts) && ts > limit) continue
+    notification.close()
+    closed++
+  }
+  return closed
+}
+
+async function handleReadSync(data) {
+  const channels = Array.isArray(data.channels) ? data.channels : []
+  let closed = 0
+  for (const item of channels) {
+    closed += await closeReadNotifications(item?.channel || '', item?.until)
+  }
+  await decrementAppBadgeCount(closed)
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  for (const client of clients) {
+    client.postMessage({ type: 'read-sync', channels })
+  }
+}
+
 self.addEventListener('message', (event) => {
   const data = event.data
   if (!data || data.type !== 'sync-app-badge') return
@@ -58,6 +101,12 @@ self.addEventListener('push', (event) => {
     }
   }
 
+  // 既読同期は通知を出さずに、表示済みの通知を閉じるだけ（#216）
+  if (data.type === 'read') {
+    event.waitUntil(handleReadSync(data))
+    return
+  }
+
   event.waitUntil(
     (async () => {
       const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
@@ -84,6 +133,7 @@ self.addEventListener('push', (event) => {
           url: data.url || './',
           channel: data.channel || '',
           id: data.id || '',
+          ts: data.ts || '',
         },
       })
     })()

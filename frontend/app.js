@@ -678,11 +678,90 @@ function showToast(message) {
 toastCloseBtn?.addEventListener('click', hideToast)
 
 function markChannelRead(channelName, timestampMs = Date.now()) {
+  const hadUnread = (unread[channelName] || 0) > 0
   lastReadAt[channelName] = timestampMs
   saveLastReadAt()
   setChannelUnread(channelName, 0)
   updateBadge(channelName)
   updateDocumentTitle()
+  // この端末に出したままの OS 通知を閉じ、未読があったときだけ他端末へも伝える（#216）
+  void closeShownNotifications(channelName, timestampMs)
+  if (hadUnread) queueReadBroadcast(channelName, timestampMs)
+}
+
+// ── 既読の端末間同期（#216）──────────────────────────────────────────────────
+// 既読は端末ごとの localStorage にしか無いため、PC で読んでもスマホのロック画面には
+// 通知が残り続ける。表示済みの OS 通知を閉じられるのは、それを出した端末だけなので、
+// 「どのチャンネルをいつまで読んだか」をサーバー経由で本人の他端末へ配って閉じさせる。
+
+// 通知を出さない Push の無駄打ちを避けるため、続けざまの既読操作は1通にまとめる
+const READ_BROADCAST_DEBOUNCE_MS = 500
+
+let pendingReadBroadcast = {}  // channel_name -> timestamp (ms)
+let readBroadcastTimer = null
+// 他端末から降ってきた既読を適用している最中は、そのまま送り返さない
+let applyingRemoteRead = false
+
+async function closeShownNotifications(channelName, untilMs) {
+  if (!channelName || !('serviceWorker' in navigator)) return
+  try {
+    const reg = await navigator.serviceWorker.ready
+    if (!reg.getNotifications) return
+    for (const notification of await reg.getNotifications()) {
+      const data = notification.data || {}
+      if (data.channel !== channelName) continue
+      // 既読にした後に届いた通知まで消さないよう、通知自身の時刻で絞る
+      const ts = data.ts ? Date.parse(data.ts) : NaN
+      if (untilMs && !Number.isNaN(ts) && ts > untilMs) continue
+      notification.close()
+    }
+  } catch {
+    // getNotifications 非対応など
+  }
+}
+
+function queueReadBroadcast(channelName, timestampMs) {
+  if (applyingRemoteRead) return
+  const current = pendingReadBroadcast[channelName]
+  if (current === undefined || timestampMs > current) {
+    pendingReadBroadcast[channelName] = timestampMs
+  }
+  clearTimeout(readBroadcastTimer)
+  readBroadcastTimer = setTimeout(() => void flushReadBroadcast(), READ_BROADCAST_DEBOUNCE_MS)
+}
+
+async function flushReadBroadcast() {
+  const channels = Object.entries(pendingReadBroadcast)
+    .map(([channel, until]) => ({ channel, until }))
+  pendingReadBroadcast = {}
+  if (!channels.length) return
+  try {
+    // 自分自身は既に閉じてあるので、送信元の端末は宛先から外す
+    const sub = await getBrowserPushSubscription()
+    await authFetch(apiUrl('api/read'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels, endpoint: sub?.endpoint || null }),
+    })
+  } catch {
+    // 既読はローカルに残るため、配れなくてもこの端末の表示は正しい
+  }
+}
+
+function applyRemoteRead(channels) {
+  if (!Array.isArray(channels) || !channels.length) return
+  applyingRemoteRead = true
+  try {
+    for (const item of channels) {
+      const name = item?.channel
+      const until = Number(item?.until) || 0
+      if (!name || !until) continue
+      if ((lastReadAt[name] || 0) >= until) continue
+      markChannelRead(name, until)
+    }
+  } finally {
+    applyingRemoteRead = false
+  }
 }
 
 function totalUnread() {
@@ -2680,6 +2759,8 @@ function showDesktopNotification(entry) {
       url: entry.channel ? `./?channel=${encodeURIComponent(entry.channel)}&src=push` : './',
       channel: entry.channel || '',
       id: entry.id || '',
+      // 既読同期で「どこまで消してよいか」を判定するため通知自身の時刻を持たせる（#216）
+      ts: entry.timestamp || '',
     },
   }
 
@@ -4018,6 +4099,10 @@ async function registerServiceWorker() {
       void handleNotificationNavigation(msg)
       return
     }
+    if (msg.type === 'read-sync') {
+      applyRemoteRead(msg.channels)
+      return
+    }
     if (msg.type === 'push-notification') {
       const data = msg.data || {}
       showDesktopNotification({
@@ -4025,6 +4110,7 @@ async function registerServiceWorker() {
         channel: data.channel,
         title: data.title,
         message: data.body,
+        timestamp: data.ts,
       })
     }
   })
