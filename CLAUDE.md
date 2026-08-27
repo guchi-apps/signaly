@@ -52,7 +52,7 @@ patch.object(main, "_save_notification", saved.append)
 patch.object(main, "send_push_notifications", lambda entry: None)
 ```
 
-実例は `backend/test_app_login_endpoint.py`。**ローカルの MySQL は root が auth_socket
+実例は `backend/test_login_origin.py`。**ローカルの MySQL は root が auth_socket
 認証のため sudo 無しでは繋がらず、`uvicorn` を起動しても `init_db()` で落ちる。**
 エンドポイントの動作確認は上記の方式を使うこと。
 
@@ -88,13 +88,17 @@ Supabase の JWKS で署名を検証する（#110）。
 `.env.local` へ直接書く（1Password 依存を避けるため）。Redirect URLs には
 `<ベースURL>/auth/callback` を登録する。
 
-**Signaly 自身のログイン通知に `/notify/app-login/*` を使わないこと。** Supabase プロジェクトは
-複数アプリで共有していて `auth.users` はプロジェクトに1つしかなく、そこへ掛けた Database
-Webhook は他アプリのログインでも発火する。`{app_id}` は設定時に選んだ**表示名にすぎず**
-（`backend/main.py` の `/notify/app-login/{app_id}` のコメント）、通知の中身は Supabase の行
-データだけから組むため、どのアプリへのログインかを区別できない。Signaly のログイン通知は
-`POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py` から送る
-（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
+**Supabase の Database Webhooks でログイン通知を作る経路（`/notify/app-login/{app_id}`）は
+削除済み（#209）。復活させないこと。** Supabase プロジェクトは複数アプリで共有していて
+`auth.users` / `auth.sessions` はプロジェクトに1つしかなく、そこへ掛けた Database Webhook は
+**どのアプリへのログインでも**発火する。`{app_id}` は設定時に選んだ**表示名にすぎない**ため、
+他アプリへのログインが常に同じアプリ名で通知されていた。ペイロード（Supabase の行データ）に
+アプリを区別できる情報が無く、**受信側で直しようがないので経路ごと消した**。
+
+**ログイン通知は必ずアプリ自身が送る。** フロントエンドが認証コールバックを終えた時点で
+自分のバックエンドを叩き、そこから `source` 付きで共通チャンネルへ送る。Signaly 自身の
+ログイン通知は `POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py`
+から送る（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
 付けないこと**——ログインしていないのに通知が飛ぶ）。
 
 ### 通知チャンネルと送信元（source）
@@ -104,7 +108,7 @@ CI・ログインのチャンネルを作ると、アプリ数×用途ぶんチ�
 送信元は受信時に自動判定するので、**送信側（各リポジトリのワークフロー・1Password・GitHub
 secret）を変えずに済む**。判定の優先順は `X-Signaly-Source` ヘッダー → `?source=` クエリ →
 ペイロードの `source` → `fields` の `App` / `Repository` → Discord 形式の `username`
-（`backend/webhook.py`）。`/notify/app-login/{app_id}` は `app_id` がそのまま送信元になる。
+（`backend/webhook.py`）。
 
 **HTTP ヘッダーは ASCII しか運べない。** 日本語の送信元名を渡したいときに
 `X-Signaly-Source` を使うと文字化けする。`?source=`（URLエンコード）かペイロードの
@@ -146,8 +150,8 @@ organization secret を覆い隠すため、アプリ別チャンネルへ戻る
 **ログイン通知の形の正は `docs/webhook.md` の「ログイン通知の共通フォーマット」（#204）。**
 1本のチャンネルへ集約している以上、送る側がばらばらの形で送ると同じ種類の通知に見えない。
 **Signaly は受け取った通知を整え直さない**——届いたものはそのまま保存するので、揃えるのは
-送る側の役目になる。Signaly 自身が送る2経路（`backend/login_notify.py` と
-`backend/app_login.py`）は `backend/login_format.py` を共有していて、他アプリ向けの
+送る側の役目になる。Signaly 自身が送る `backend/login_notify.py` は
+`backend/login_format.py` を通してこの形を組み、他アプリ向けの
 コピー元テンプレート（Next.js / Python）も `docs/webhook.md` に置いてある。**受信側で
 整形し直す作りにしないこと**——形の定義が送信側と受信側の2か所に散り、通知の中身が
 「送信側の書いたとおり」でなくなる。
@@ -166,17 +170,20 @@ portfolio は `Portfolio`、asset-manager は `Asset Manager`）。#204 以前�
 接続のたびにIPが変わるため毎回警告になり、意味がなくなる。**そのアプリで1件目の通知は
 覚えるだけで警告しない**（全アプリの1回目が必ず黄色になるのを防ぐ）。
 
-**ログイン通知の集約に Database Webhooks（`/notify/app-login/{app_id}`）を使わないこと。**
-上記のとおり `{app_id}` は表示名にすぎず、Supabase プロジェクトを共有している以上、
+**ログイン通知の集約に Database Webhooks を使わないこと。受け口（`/notify/app-login/{app_id}`）は
+#209 で削除した。** `{app_id}` は表示名にすぎず、Supabase プロジェクトを共有している以上、
 どのアプリへのログインでも同じ Webhook が発火する。集約先が1本になると、この不一致が
-そのまま「全部同じアプリからに見える」という形で表面化する。
+そのまま「全部同じアプリからに見える」という形で表面化した（実際 ops-dashboard を名乗る
+通知が、issue-deck へのログインでも飛んでいた）。**受信側では区別する手がかりがペイロードに
+無いため、直せるのは送信側だけ。**
 
 **OAuth のコールバックを Supabase がホストしていて通知を差し込む場所が無いアプリは、
 Signaly 自身と同じ形を取る。** フロントエンドが認証コールバックを終えた時点で自分の
 バックエンドを叩き、そこから `source` 付きで共通チャンネルへ送る
 （`frontend/auth/callback.html` → `POST /auth/session` → `login_notify.py`）。
-Database Webhooks が要るのは「アプリのコードを1行も足せない」場合だけで、
-フロントエンドを持っているなら常にこちらを選べる。
+Next.js のアプリなら `/auth/callback` の Route Handler がその場所になる
+（ops-dashboard の `src/app/auth/callback/route.ts` が実例）。**フロントエンドを持っている
+アプリは必ずこちらを選べる。**
 
 **チャンネル統合のテストはモックせず SQLite に通す。** 履歴を `UPDATE` で移し替える不可逆な
 操作なので、戻り値ではなく実際の行を確認する必要がある。`database.py` の engine は import 時に
