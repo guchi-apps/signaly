@@ -1,6 +1,7 @@
 """push.py のユニットテスト"""
 
 import base64
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,12 +11,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
 
 from push import (
+    _build_payload,
     _looks_like_application_server_key,
     _looks_like_truncated_pem,
     _normalize_key_text,
     _parse_private_key,
     push_vapid_healthy,
     send_push_notifications,
+    send_read_sync,
     send_test_push_to_user,
     VAPID_SUBJECT,
 )
@@ -269,6 +272,99 @@ class TestSendTestPushToUser(unittest.TestCase):
         )
         self.assertEqual(result["sent"], 1)
         self.assertEqual(webpush.call_count, 1)
+
+
+class TestSendReadSync(unittest.TestCase):
+    """既読同期（#216）は本人の端末だけへ、送信元を除いて配る"""
+
+    SUBS = [
+        {
+            "id": "1",
+            "email": "user@example.com",
+            "endpoint": "https://fcm.googleapis.com/fcm/send/abc",
+            "p256dh": "k1",
+            "auth": "a1",
+        },
+        {
+            "id": "2",
+            "email": "user@example.com",
+            "endpoint": "https://web.push.apple.com/xyz",
+            "p256dh": "k2",
+            "auth": "a2",
+        },
+    ]
+
+    @patch("push.push_configured", return_value=False)
+    def test_not_configured(self, _configured):
+        result = send_read_sync("user@example.com", [{"channel": "ci", "until": 1}])
+        self.assertEqual(result["error"], "not_configured")
+
+    @patch("push.webpush")
+    @patch("push._load_vapid")
+    @patch("push._fetch_subscriptions_for_email")
+    @patch("push.push_configured", return_value=True)
+    def test_no_channels_sends_nothing(self, _configured, fetch_subs, _load_vapid, webpush):
+        result = send_read_sync("user@example.com", [])
+        self.assertEqual(result["sent"], 0)
+        self.assertEqual(webpush.call_count, 0)
+        self.assertEqual(fetch_subs.call_count, 0)
+
+    @patch("push.webpush")
+    @patch("push._load_vapid")
+    @patch("push._fetch_subscriptions_for_email")
+    @patch("push.push_configured", return_value=True)
+    def test_excludes_origin_endpoint(self, _configured, fetch_subs, _load_vapid, webpush):
+        fetch_subs.return_value = list(self.SUBS)
+        result = send_read_sync(
+            "user@example.com",
+            [{"channel": "ci", "until": 1700000000000}],
+            "https://fcm.googleapis.com/fcm/send/abc",
+        )
+        self.assertEqual(result["sent"], 1)
+        self.assertEqual(webpush.call_count, 1)
+        fetch_subs.assert_called_once_with("user@example.com")
+        sent_to = webpush.call_args.kwargs["subscription_info"]["endpoint"]
+        self.assertEqual(sent_to, "https://web.push.apple.com/xyz")
+
+    @patch("push.webpush")
+    @patch("push._load_vapid")
+    @patch("push._fetch_subscriptions_for_email")
+    @patch("push.push_configured", return_value=True)
+    def test_payload_carries_channels_and_short_ttl(
+        self, _configured, fetch_subs, _load_vapid, webpush
+    ):
+        fetch_subs.return_value = [dict(self.SUBS[0])]
+        channels = [
+            {"channel": "ci", "until": 1700000000000},
+            {"channel": "login", "until": 1700000001000},
+        ]
+        send_read_sync("user@example.com", channels)
+        payload = json.loads(webpush.call_args.kwargs["data"])
+        self.assertEqual(payload["type"], "read")
+        self.assertEqual(payload["channels"], channels)
+        # 遅れて届いた既読同期が、その間の新着まで消さないよう TTL は短く
+        self.assertEqual(webpush.call_args.kwargs["ttl"], 60)
+
+
+class TestBuildPayload(unittest.TestCase):
+    def test_includes_timestamp_for_read_sync(self):
+        payload = json.loads(
+            _build_payload(
+                {
+                    "id": "n1",
+                    "channel": "ci",
+                    "title": "t",
+                    "message": "m",
+                    "timestamp": "2026-08-27T00:00:00Z",
+                }
+            )
+        )
+        self.assertEqual(payload["ts"], "2026-08-27T00:00:00Z")
+        self.assertEqual(payload["channel"], "ci")
+
+    def test_timestamp_missing_becomes_empty(self):
+        payload = json.loads(_build_payload({"id": "n1", "channel": "ci", "message": "m"}))
+        self.assertEqual(payload["ts"], "")
 
 
 if __name__ == "__main__":
