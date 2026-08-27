@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Signaly CI / デプロイ通知スクリプト（GitHub Actions 用）
+# Signaly CI / デプロイ / リリース通知スクリプト（GitHub Actions 用）
 #
 # 手順の詳細: ../_docs/README.md（CI / デプロイ通知セクション）
 # 各アプリの .github/scripts/ にコピーして使用する。
@@ -10,14 +10,20 @@
 #   別のrunについて通知する場合だけ指定する（例: deploy-retry.yml が「再実行するデプロイの
 #   run」へリンクする。#2134）。未指定なら従来どおりの挙動。
 #
+# Optional: SIGNALY_RELEASE_WEBHOOK_URL … **リリース通知だけを別チャンネルへ送る**webhook
+#   （#2391）。CI・デプロイは1日に何十件も流れるため、月に数回のリリースがその中に埋もれる。
+#   **未設定なら SIGNALY_WEBHOOK_URL へ送る。** 配布先のワークフローがまだ渡していなくても、
+#   organization secretが未登録でも、通知そのものが消えないようにするためのフォールバック。
+#
+# Optional: NOTIFY_NOTES_FILE … リリース通知の本文に載せる変更内容のファイル
+#   （既定 `.github/release-notes.md`）。共有ワークフロー
+#   `reusable-release-develop-to-main.yml` がバージョンbumpのたびに書き出す。
+#   **先頭の見出しが NOTIFY_VERSION と一致したときだけ載せる**——別バージョンの文面を
+#   貼ってしまうより、本文なしで送るほうがましなため。
+#
 # **どう転んでも終了コードは0で返す**（#2237）。通知先が落ちていてもrunを赤くしない。
 # 呼び出し側のステップには、あわせて`continue-on-error: true`を付けておく。
 set -euo pipefail
-
-if [[ -z "${SIGNALY_WEBHOOK_URL:-}" ]]; then
-  echo "SIGNALY_WEBHOOK_URL not set; skipping Signaly notification"
-  exit 0
-fi
 
 status="${NOTIFY_STATUS:-unknown}"
 app_name="${NOTIFY_APP:-}"
@@ -29,13 +35,33 @@ repository="${GITHUB_REPOSITORY:-}"
 ref_name="${GITHUB_REF_NAME:-}"
 sha="${GITHUB_SHA:-}"
 sha_short="${sha:0:7}"
-run_url="${NOTIFY_RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+server_url="${GITHUB_SERVER_URL:-https://github.com}"
+run_url="${NOTIFY_RUN_URL:-${server_url}/${repository}/actions/runs/${GITHUB_RUN_ID:-}}"
+notes_file="${NOTIFY_NOTES_FILE:-.github/release-notes.md}"
+
+# リリースだけは宛先も見た目も別扱いにする（#2391）。判定はここ1か所に閉じ込める。
+is_release=false
+[[ "$kind" == "リリース" ]] && is_release=true
+
+# **リリース用のwebhookが無ければ従来のチャンネルへ送る。** 分離が済んでいない配布先でも
+# 通知が消えないようにするためのフォールバック（上のコメントを参照）。
+webhook_url="${SIGNALY_WEBHOOK_URL:-}"
+if [[ "$is_release" == "true" && -n "${SIGNALY_RELEASE_WEBHOOK_URL:-}" ]]; then
+  webhook_url="$SIGNALY_RELEASE_WEBHOOK_URL"
+fi
+
+if [[ -z "$webhook_url" ]]; then
+  echo "SIGNALY_WEBHOOK_URL not set; skipping Signaly notification"
+  exit 0
+fi
 
 case "$status" in
   success)
     emoji="✅"
     color="#57f287"
     status_label="成功"
+    # リリース専用チャンネルでは全件が成功のリリースになりうるので、✅より内容が分かる絵文字にする
+    [[ "$is_release" == "true" ]] && emoji="🚀"
     ;;
   failure)
     emoji="❌"
@@ -55,7 +81,7 @@ case "$status" in
 esac
 
 if [[ -n "$app_name" && -n "$kind" ]]; then
-  if [[ "$kind" == "リリース" && -n "$version" ]]; then
+  if [[ "$is_release" == "true" && -n "$version" ]]; then
     title="${emoji} [${app_name}] ${kind} ${version} ${status_label}"
   else
     title="${emoji} [${app_name}] ${kind} ${status_label}"
@@ -64,6 +90,11 @@ elif [[ -n "$app_name" ]]; then
   title="${emoji} [${app_name}] ${workflow_name} ${status_label}"
 else
   title="${emoji} ${workflow_name} ${status_label}"
+fi
+
+release_url=""
+if [[ "$is_release" == "true" && -n "$version" && -n "$repository" ]]; then
+  release_url="${server_url}/${repository}/releases/tag/${version}"
 fi
 
 export NOTIFY_STATUS="$status"
@@ -75,12 +106,16 @@ export NOTIFY_VERSION="$version"
 export REPOSITORY="$repository"
 export SHA_SHORT="$sha_short"
 export RUN_URL="$run_url"
+export RELEASE_URL="$release_url"
 export COLOR="$color"
 export TITLE="$title"
+export IS_RELEASE="$is_release"
+export NOTES_FILE="$notes_file"
 
 payload=$(python3 - <<'PY'
 import json
 import os
+import re
 
 app_name = os.environ.get("NOTIFY_APP", "")
 kind = os.environ.get("NOTIFY_KIND", "")
@@ -92,35 +127,96 @@ ref_name = os.environ.get("GITHUB_REF_NAME", "")
 sha_short = os.environ.get("SHA_SHORT", "")
 actor = os.environ.get("GITHUB_ACTOR", "")
 run_url = os.environ.get("RUN_URL", "")
+release_url = os.environ.get("RELEASE_URL", "")
 color = os.environ["COLOR"]
 title = os.environ["TITLE"]
+is_release = os.environ.get("IS_RELEASE") == "true"
+notes_file = os.environ.get("NOTES_FILE", "")
+
+# 本文が長すぎると通知一覧が1件で埋まる。切るときは切ったことが分かるようにする。
+MESSAGE_LIMIT = 1500
+
+
+def read_release_notes(path, expected_version):
+    """`.github/release-notes.md` から本文を取り出す（#2391）。
+
+    先頭のHTMLコメント（「手で編集しない」の断り書き）を捨て、最初の見出し行
+    `# v1.2.3` をバージョンの照合に使う。**照合できなければ本文を載せない。**
+    リリースの流れの外でファイルが取り残されたとき、古い文面を新しいバージョンの
+    通知に貼ってしまうほうが、本文が無いことより悪いため。
+    """
+    if not path or not expected_version:
+        return ""
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = handle.read()
+    except OSError:
+        return ""
+
+    lines = [line for line in raw.splitlines() if not re.fullmatch(r"\s*<!--.*-->\s*", line)]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    if not lines:
+        return ""
+
+    heading = re.fullmatch(r"#\s*(\S+)\s*", lines[0])
+    if not heading:
+        return ""
+    if heading.group(1).lstrip("v") != expected_version.lstrip("v"):
+        return ""
+
+    body = "\n".join(lines[1:]).strip()
+    if len(body) > MESSAGE_LIMIT:
+        body = body[:MESSAGE_LIMIT].rstrip() + "…"
+    return body
+
+
+message = read_release_notes(notes_file, version) if is_release else ""
 
 fields = []
 if app_name:
     fields.append({"name": "App", "value": app_name, "inline": True})
-if kind:
-    fields.append({"name": "Type", "value": kind, "inline": True})
-if version:
-    fields.append({"name": "Version", "value": f"`{version}`", "inline": True})
-if repository:
-    fields.append({"name": "Repository", "value": f"`{repository}`", "inline": True})
-if ref_name:
-    fields.append({"name": "Branch", "value": ref_name, "inline": True})
-if sha_short:
-    fields.append({"name": "Commit", "value": f"`{sha_short}`", "inline": True})
-if actor:
-    fields.append({"name": "Actor", "value": actor, "inline": True})
-if job_name:
-    fields.append({"name": "Job", "value": job_name, "inline": True})
-if event_name:
-    fields.append({"name": "Event", "value": event_name, "inline": True})
+if is_release:
+    # **リリース専用のチャンネルでは、毎回同じ値になる項目を並べない**（#2391）。
+    # Type（常に「リリース」）・Branch（常にmain）・Actor・Job・Eventがそれで、
+    # 代わりにGitHub Releaseへのリンクを出す。
+    if version:
+        fields.append({"name": "Version", "value": f"`{version}`", "inline": True})
+    if repository:
+        fields.append({"name": "Repository", "value": f"`{repository}`", "inline": True})
+    if sha_short:
+        fields.append({"name": "Commit", "value": f"`{sha_short}`", "inline": True})
+    if release_url and version:
+        fields.append({"name": "Release", "value": f"[{version}]({release_url})", "inline": True})
+else:
+    if kind:
+        fields.append({"name": "Type", "value": kind, "inline": True})
+    if version:
+        fields.append({"name": "Version", "value": f"`{version}`", "inline": True})
+    if repository:
+        fields.append({"name": "Repository", "value": f"`{repository}`", "inline": True})
+    if ref_name:
+        fields.append({"name": "Branch", "value": ref_name, "inline": True})
+    if sha_short:
+        fields.append({"name": "Commit", "value": f"`{sha_short}`", "inline": True})
+    if actor:
+        fields.append({"name": "Actor", "value": actor, "inline": True})
+    if job_name:
+        fields.append({"name": "Job", "value": job_name, "inline": True})
+    if event_name:
+        fields.append({"name": "Event", "value": event_name, "inline": True})
 fields.append({"name": "Run", "value": f"[Workflow Run]({run_url})", "inline": False})
 
-print(json.dumps({
+payload = {
     "title": title,
     "color": color,
     "fields": fields,
-}))
+}
+# 本文が空のときはキーごと落とす。空文字を送ると、Signalyが本文の枠だけを描く。
+if message:
+    payload["message"] = message
+
+print(json.dumps(payload))
 PY
 )
 
@@ -146,7 +242,7 @@ http_code="$(curl -fsS -o /dev/null -w '%{http_code}' \
   --max-time 10 --retry 2 --retry-delay 2 \
   -H "Content-Type: application/json" \
   -d "$payload" \
-  "$SIGNALY_WEBHOOK_URL" 2>/dev/null)" || curl_status=$?
+  "$webhook_url" 2>/dev/null)" || curl_status=$?
 
 if [[ "$curl_status" -eq 0 ]]; then
   echo "Signalyへ通知しました (HTTP ${http_code})"
