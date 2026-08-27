@@ -207,6 +207,32 @@ Next.js のアプリなら `/auth/callback` の Route Handler がその場所に
 （`notifications.source`）のインデックスは `_migrate_add_columns()` の中で
 `CREATE INDEX` を try/except で流す必要がある。
 
+### 既読と Web Push（既読は端末ローカル・同期は通知を出さない Push）
+
+**既読状態はサーバーに持っていない。** `lastReadAt` / `unread` は各端末の localStorage
+（`signaly-last-read` / `signaly-unread`）にしか無く、DB にも API にも既読の概念は無い。
+**「既読になったから Push を送らない」という作りにはできない**——Push は webhook を受けた
+瞬間に全端末へ送るので、送信時点の通知は必ず未読。既読を反映できるのは「すでに表示されて
+いる OS 通知を閉じる」方向だけで、**閉じられるのはその通知を出した端末の Service Worker
+だけ**（他端末の通知にはどの API からも触れない）。そのため #216 では、既読にした端末が
+`POST /api/read` を叩き、サーバーが本人の Push 登録（`_fetch_subscriptions_for_email`）へ
+`{"type":"read","channels":[…]}` を配り、各端末の SW が `getNotifications()` で閉じている。
+
+**この既読同期は通知を出さない Push（サイレント Push）である。** ブラウザによっては、通知を
+表示しない Push を繰り返すと「バックグラウンドで更新されました」という代替通知を出したり、
+購読そのものを失効させたりする。**1回の既読操作につき1通に抑えること**——`POST /api/read` は
+チャンネルの配列を受け、フロントエンドは 500ms デバウンスでまとめる（「すべて既読にする」は
+チャンネル数ぶんループするため、まとめないと一気に何通も飛ぶ）。**未読が1件も無いチャンネルを
+既読にしたときは送らない**（`markChannelRead` は表示中チャンネルへの新着ごとにも呼ばれる）。
+
+**閉じる通知は必ず時刻で絞る。** Push のペイロードに通知自身の時刻 `ts` を載せ、SW 側で
+`ts <= until` のものだけ閉じる。チャンネル名だけで閉じると、**既読にした後に届いた通知まで
+消える**（既読同期が遅れて届くほど起きやすいので、`ttl=60` で溜め込ませない）。
+
+**受け取った既読をそのまま送り返さないこと。** SW → ページの `read-sync` で
+`markChannelRead()` を呼ぶと、そのまま `POST /api/read` へ戻って端末間で往復する。
+`applyRemoteRead()` はフラグで送信を止めている。
+
 ### DBスキーマの反映（アプリ起動時にDDLを流さない）
 
 **`backend/main.py` の lifespan から `init_db()`（`create_all`）を呼ばないこと。** 本番のDB

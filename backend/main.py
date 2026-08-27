@@ -45,6 +45,7 @@ from push import (
     push_configured,
     push_vapid_healthy,
     send_push_notifications,
+    send_read_sync,
     send_test_push_to_user,
     validate_push_config,
 )
@@ -1396,6 +1397,55 @@ async def push_test(
 async def push_unsubscribe(body: PushSubscribeBody, email: str = Depends(auth.require_auth)):
     await asyncio.to_thread(_delete_push_subscription, body.endpoint)
     return {"ok": True}
+
+
+class ReadChannel(BaseModel):
+    channel: str
+    until: int
+
+    @field_validator("channel")
+    @classmethod
+    def validate_channel(cls, v: str) -> str:
+        name = (v or "").strip()
+        if not name:
+            raise ValueError("channel が必要です")
+        return name
+
+    @field_validator("until")
+    @classmethod
+    def validate_until(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("until は正の epoch ミリ秒で指定してください")
+        return v
+
+
+class ReadSyncBody(BaseModel):
+    channels: List[ReadChannel]
+    endpoint: Optional[str] = None
+
+    @field_validator("channels")
+    @classmethod
+    def validate_channels(cls, v: List[ReadChannel]) -> List[ReadChannel]:
+        if not v:
+            raise ValueError("channels が空です")
+        # 通知を出さない Push なので、1回の既読操作で何通も配らないよう上限を設ける
+        if len(v) > 100:
+            raise ValueError("channels が多すぎます")
+        return v
+
+
+@app.post("/api/read")
+async def read_sync(body: ReadSyncBody, email: str = Depends(auth.require_auth)):
+    """既読にしたことを本人の他端末へ伝える（#216）。
+
+    既読そのものは端末側の localStorage が正で、ここでは保存しない。他端末に出たままの
+    OS 通知を閉じさせるための中継だけを行う。
+    """
+    if not push_configured():
+        return {"ok": True, "sent": 0}
+    channels = [{"channel": c.channel, "until": c.until} for c in body.channels]
+    result = await asyncio.to_thread(send_read_sync, email, channels, body.endpoint)
+    return {"ok": True, **result}
 
 
 # ── API キー ──────────────────────────────────────────────────────────────────
