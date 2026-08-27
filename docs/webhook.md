@@ -68,6 +68,45 @@ curl -X POST "$SIGNALY_WEBHOOK_URL" \
 転送されてきた通知の送信元は、上の表で決まらなかった場合にかぎり、統合時に指定した送信元名
 （既定は統合元のチャンネル名）が使われます。
 
+### 古いチャンネルを片付ける前の棚卸し
+
+**チャンネルを消す前に、そのチャンネルIDの Webhook URL がどこに残っているかを数え上げてください。**
+URL は1か所にまとまっておらず、**送信側を止めても消えない場所**（バックアップ・スナップショット）
+にも焼き付いています。数え上げてもなお不安が残るときは、**削除ではなく統合を選べば取りこぼしても
+404 になりません**（統合元IDは `channel_aliases` に残ります）。
+
+探す場所は次の5つです。**どれか1つでも見落とすと、生きている送信元を消したことに気付けません。**
+
+| 場所 | 調べ方 |
+|---|---|
+| 1Password（`apps` ボールト） | 各アイテムのフィールドを走査する。`*-webhook-url` という名前だけを見ないこと（`aide` は `signaly_webhook_url`、`car` は `SIGNALY_WEBHOOK_LOGIN_URL` と、命名が揃っていない） |
+| GitHub の organization secret | `gh api orgs/<org>/actions/secrets`。値は読めないので、1Password 側の正と対応付けて判断する |
+| GitHub の repository secret | **同名の repository secret は organization secret を覆い隠す。** `gh api repos/<org>/<repo>/actions/secrets` を全リポジトリぶん引いて、同名が無いことを確かめる |
+| VPS・サブPC の設定ファイル | 各アプリの `.env` と、`~/.config/<app>/*.env` のようなホスト固有の設定 |
+| **PM2 のダンプ（`~/.pm2/dump.pm2`）** | `pm2 save` の時点の環境変数がまるごと固まっている。`.env` を新しい URL に直しても、**`pm2 resurrect` で古い URL が復活する** |
+
+```bash
+# VPS / サブPC 側。node_modules を除かないと終わらない
+grep -rhoE "signaly\.<ホスト>/webhook/[A-Za-z0-9_-]+" ~ \
+  --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=.next --exclude-dir=venv \
+  | sort | uniq -c
+```
+
+**チャンネル名からは送信元を推測しないこと。** チャンネル名とアプリ名が一致していても、その名前で
+呼んでいる送信側が今も生きているとはかぎらず、逆に名前の無関係なアイテム
+（`subpc` の `ci-webhook-url` など）が別のチャンネルを指していることもあります。
+**突き合わせるのはチャンネルIDだけ**にしてください。
+
+### 統合するときに指定する送信元名
+
+統合ダイアログの **送信元名** は、既定だと統合元のチャンネル名（`ci_signaly` など）になります。
+**そのまま統合しないでください。** 通知一覧の送信元チップは文字列そのままで分かれるため、
+統合先に既にある送信元名とずれると、同じアプリが2つのチップに割れます。
+
+**そのリポジトリのワークフローが渡している `NOTIFY_APP` と同じ値を入れてください**
+（`Signaly` / `Portfolio` / `MyRoom` / `Asset Manager` / `Car Care` / `Solitaire` など。
+リポジトリ名そのままとはかぎりません）。
+
 ### ログイン通知の共通チャンネル
 
 **ログイン通知は、CI / デプロイ通知と同じく全アプリで1本のチャンネルへ集約します。**
