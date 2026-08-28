@@ -58,6 +58,7 @@ jobs:
         env:
           SIGNALY_WEBHOOK_URL: ${{ env.SIGNALY_WEBHOOK_URL }}
           NOTIFY_APP:      Signaly
+          SIGNALY_RELEASE_WEBHOOK_URL: ${{ secrets.SIGNALY_RELEASE_WEBHOOK_URL }}
           NOTIFY_KIND:     リリース
           NOTIFY_STATUS:   ${{ needs.release.result }}
           NOTIFY_JOB:      release
