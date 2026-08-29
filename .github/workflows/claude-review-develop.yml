@@ -41,7 +41,7 @@ on:
 
 jobs:
   review:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-review-develop.yml@workflows/v28
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-review-develop.yml@workflows/v29
     with:
       # 内蔵パターンでは拾えないもののうち、**どのリポジトリにも共通で置けるぶん**だけ。
       #
@@ -59,7 +59,7 @@ jobs:
         /package\.json$ :: ルート以外の依存関係の変更 (frontend/package.json など。dependency-checkはルートしか見ない)
       # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
       # 古いプロンプトが使われる。
-      prompts-ref: workflows/v28
+      prompts-ref: workflows/v29
     secrets: inherit
     permissions:
       contents: write
