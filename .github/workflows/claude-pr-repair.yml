@@ -32,7 +32,7 @@ on:
 
 jobs:
   pr-repair:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-pr-repair.yml@workflows/v30
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-claude-pr-repair.yml@workflows/v31
     with:
       runtime-setup: minimal
       package-manager: npm
@@ -42,7 +42,7 @@ jobs:
       mode: ${{ inputs.mode }}
       # 上の uses: と同じタグを指定する。片方だけ上げると新しいワークフローで
       # 古いプロンプトが使われる。
-      prompts-ref: workflows/v30
+      prompts-ref: workflows/v31
     secrets: inherit
     permissions:
       contents: write

@@ -35,7 +35,7 @@ on:
 
 jobs:
   labels:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-labels.yml@workflows/v30
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-issue-labels.yml@workflows/v31
     # 呼ばれる側の権限はcallerの付与範囲を超えられない。cleanup-on-closeジョブが
     # contents: write を要求するため、あわせてここで付与する。
     permissions:
