@@ -29,7 +29,7 @@ on:
 
 jobs:
   deploy-retry:
-    uses: guchi-apps/issue-deck/.github/workflows/reusable-deploy-retry.yml@workflows/v30
+    uses: guchi-apps/issue-deck/.github/workflows/reusable-deploy-retry.yml@workflows/v31
     with:
       app-name: signaly
     secrets: inherit
