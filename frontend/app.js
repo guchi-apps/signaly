@@ -679,14 +679,19 @@ toastCloseBtn?.addEventListener('click', hideToast)
 
 function markChannelRead(channelName, timestampMs = Date.now()) {
   const hadUnread = (unread[channelName] || 0) > 0
-  lastReadAt[channelName] = timestampMs
+  // selectChannel は SSE 接続と履歴取得を並行して走らせるため、どちらの markChannelRead が
+  // 先に完了するかは保証されない。後から完了した側の時刻が古いと既読位置を巻き戻してしまい、
+  // 画面には表示済みの通知がポーリングのたびに未読として再カウントされ続けるため、
+  // 既読位置は常に前進のみ（新しい方を採用）とする（#232）。
+  const readAt = Math.max(lastReadAt[channelName] || 0, timestampMs)
+  lastReadAt[channelName] = readAt
   saveLastReadAt()
   setChannelUnread(channelName, 0)
   updateBadge(channelName)
   updateDocumentTitle()
   // この端末に出したままの OS 通知を閉じ、未読があったときだけ他端末へも伝える（#216）
-  void closeShownNotifications(channelName, timestampMs)
-  if (hadUnread) queueReadBroadcast(channelName, timestampMs)
+  void closeShownNotifications(channelName, readAt)
+  if (hadUnread) queueReadBroadcast(channelName, readAt)
 }
 
 // ── 既読の端末間同期（#216）──────────────────────────────────────────────────
