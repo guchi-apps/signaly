@@ -452,6 +452,32 @@ function setChannelUnread(channelName, count) {
   saveUnread()
 }
 
+// 他端末でのチャンネル削除・統合・改名は、この端末が起動中でなければ知りようがない
+// （SSEはチャンネル選択中のみ張られ、チャンネル一覧の変更を配らない）。そのため
+// renderChannelTree() のたびに、サーバーの現在の一覧に無いチャンネル名の未読件数を
+// localStorage から取り除く。放置すると totalUnread() が拾い続け、ベルとホーム画面の
+// バッジが実在しないチャンネルの未読分だけ恒久的に食い違ったまま残る（#236）。
+function pruneStaleReadState(validNames) {
+  const valid = new Set(validNames)
+  let unreadChanged = false
+  for (const name of Object.keys(unread)) {
+    if (!valid.has(name)) {
+      delete unread[name]
+      unreadChanged = true
+    }
+  }
+  if (unreadChanged) saveUnread()
+
+  let lastReadChanged = false
+  for (const name of Object.keys(lastReadAt)) {
+    if (!valid.has(name)) {
+      delete lastReadAt[name]
+      lastReadChanged = true
+    }
+  }
+  if (lastReadChanged) saveLastReadAt()
+}
+
 function loadLastChannel() {
   try {
     return localStorage.getItem(LAST_CHANNEL_KEY) || null
@@ -1801,6 +1827,7 @@ function renderChannelTree(data, selectName = null, options = {}) {
   }
 
   const names = allChannelNames()
+  pruneStaleReadState(names)
 
   if (!channelGroups.length && !names.length) {
     channelList.innerHTML = '<div class="loading-text">グループを作成してチャンネルを追加</div>'
@@ -1812,6 +1839,7 @@ function renderChannelTree(data, selectName = null, options = {}) {
     renderSourceFilter()
     hideFeedState()
     exitNotifSelectMode()
+    updateDocumentTitle()
     return
   }
 
