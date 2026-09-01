@@ -172,6 +172,11 @@ def read_release_notes(path, expected_version):
 
 
 message = read_release_notes(notes_file, version) if is_release else ""
+# **リリース通知の本文は空欄のまま送らない**（guchi-apps/issue-deck#2683）。見出しの
+# バージョン不一致・ファイル不在・中身が空など、理由を区別せず一律でこの一文にする。
+# 受け取った側が「更新内容が本当に無かった」のか「通知が壊れている」のか区別できるようにする。
+if is_release and not message:
+    message = "今回のリリースでは、表示できる更新内容がありません。"
 
 fields = []
 if app_name:
