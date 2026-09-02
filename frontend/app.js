@@ -795,8 +795,16 @@ function applyRemoteRead(channels) {
   }
 }
 
+// アプリのバッジ・タブタイトル・右上ベルマークの件数は、通知を有効にしている
+// チャンネルの未読だけを数える（#241）。サイドバーのチャンネル別バッジ・グループの
+// バッジはここを通らず、今まで通り全ての未読を数える。
 function totalUnread() {
-  return Object.values(unread).reduce((sum, n) => sum + (n || 0), 0)
+  let total = 0
+  for (const [name, count] of Object.entries(unread)) {
+    if (!countsTowardUnreadBadge(name)) continue
+    total += count || 0
+  }
+  return total
 }
 
 function updateDocumentTitle() {
@@ -1456,7 +1464,8 @@ async function fetchUnreadForChannel(name) {
 
 async function loadUnreadMessages() {
   const requestId = ++notificationsRequestId
-  const names = allChannelNames().filter(name => unread[name] > 0)
+  // 件数（バッジ・ベルマーク）と中身を一致させるため、通知を無効にしたチャンネルは並べない（#241）
+  const names = allChannelNames().filter(name => unread[name] > 0 && countsTowardUnreadBadge(name))
   if (!names.length) {
     renderNotificationsList([])
     return
@@ -2463,6 +2472,8 @@ function refreshNotifIndicators() {
     const indicator = section.querySelector('.channel-group-label-wrap .notif-indicator')
     if (indicator) applyGroupNotifIndicator(indicator, section.dataset.groupId)
   }
+  // 通知設定はバッジ・ベルマークの件数にも効くため、設定を読み込んだ／変えた時点で数え直す（#241）
+  updateDocumentTitle()
 }
 
 function setNotifSegmentValue(segmentEl, value) {
@@ -2557,6 +2568,15 @@ function isNotificationEnabled(channelName) {
   }
 
   return true
+}
+
+// 通知設定は起動後に GET /api/notification-settings を読むまで分からない。
+// isNotificationEnabled() は未読込を false として返すため、そのまま件数の判定に使うと
+// 起動直後のバッジ・ベルの件数が一瞬 0 になる。読み込み前は「有効」として数え、
+// 読み込み・設定変更のたびに refreshNotifIndicators() から数え直す（#241）。
+function countsTowardUnreadBadge(channelName) {
+  if (!notificationPrefsReady) return true
+  return isNotificationEnabled(channelName)
 }
 
 function setupNotifSegment(segmentEl, onSelect) {
