@@ -233,6 +233,20 @@ Next.js のアプリなら `/auth/callback` の Route Handler がその場所に
 `markChannelRead()` を呼ぶと、そのまま `POST /api/read` へ戻って端末間で往復する。
 `applyRemoteRead()` はフラグで送信を止めている。
 
+**未読件数を数える範囲は表示場所ごとに違う（#241）。** アプリのバッジ・タブタイトル・右上
+ベルマークの件数（`totalUnread()`）と、ベルマークの未読一覧（`loadUnreadMessages()`）は
+**通知を有効にしているチャンネルの未読だけ**を数える。サイドバーのチャンネル別バッジ・
+グループのバッジ（`updateBadge()` / `groupUnreadTotal()`）は今まで通り**全ての未読**を数える
+（通知を切ったチャンネルにも新着が来ていることは、アプリを開けば分かる状態を保つ）。
+
+**この判定に `isNotificationEnabled()` を直接使わないこと。** 同関数は通知設定を読み込む前
+（`notificationPrefsReady === false`）を `false` として返すため、そのまま件数へ使うと起動直後の
+バッジとベルの件数が一瞬 0 になる。件数側は `countsTowardUnreadBadge()` を通し、**未読込は
+「有効」として数えて**おき、`refreshNotifIndicators()`（通知設定の読み込み・変更のたびに
+呼ばれる）から数え直す。**Push 側は元から整合している**——`backend/push.py` が
+`resolve_notification_enabled()` で宛先を絞るため、無効チャンネルの Push はそもそも届かず、
+Service Worker のバッジ加算（`incrementAppBadgeCount()`）も走らない。
+
 ### DBスキーマの反映（アプリ起動時にDDLを流さない）
 
 **`backend/main.py` の lifespan から `init_db()`（`create_all`）を呼ばないこと。** 本番のDB
