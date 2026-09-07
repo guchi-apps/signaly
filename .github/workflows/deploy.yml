@@ -145,7 +145,7 @@ jobs:
           DB_ADMIN_USER_B64=$(b64 "$DB_ADMIN_USER")
           DB_ADMIN_PASSWORD_B64=$(b64 "$DB_ADMIN_PASSWORD")
 
-          ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" << EOF
+          ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" bash -s << EOF
             set -e
             cd "${TARGET_DIR}"
 
