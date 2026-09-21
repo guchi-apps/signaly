@@ -109,12 +109,19 @@ const SignalyAuth = (() => {
     if (error) throw error
   }
 
+  /**
+   * このアプリのセッションだけを破棄する（通常ログアウトも、403 時の破棄もここを通る）。
+   *
+   * Supabase プロジェクトは他アプリと共有している。signOut() の既定 scope は `global` で、
+   * 引数なしで呼ぶと同じユーザーの他アプリ・他端末の refresh token まで失効する。
+   * 必ず `local` を渡すこと。
+   */
   async function signOut() {
     lastCookieToken = null
     sessionCookiePromise = null
     try {
       const supabase = await getClient()
-      await supabase.auth.signOut()
+      await supabase.auth.signOut({ scope: 'local' })
     } catch {
       // Supabase 側が落ちていてもローカルのログアウトは進める
     }
