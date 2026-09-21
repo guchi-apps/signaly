@@ -276,7 +276,14 @@ python scripts/bump_version.py minor   # 1.0.0 → 1.1.0
 python scripts/bump_version.py major   # 1.0.0 → 2.0.0
 ```
 
-`frontend/changelog.js` に追加されたスタブの `changes` を編集してからコミットします。
+通常は `develop`→`main` のリリースワークフローが呼び、`RELEASE_CHANGELOG`（利用者向けの変更内容）を
+`frontend/changelog.js` の先頭へエントリとして追加します。**`RELEASE_CHANGELOG` が空なら
+エントリは作らず、バージョンだけを上げます**（画面で体感できる変化が無いリリース。仮の文言は入れません）。
+手元で実行する場合は、変更内容を書きたいときだけ環境変数で渡すか、実行後に `changelog.js` へ直接書き足します。
+
+```bash
+RELEASE_CHANGELOG=$'- 通知の表示を直した' python3 scripts/bump_version.py patch
+```
 
 ```bash
 git commit -m "v1.0.1 をリリースする。"
