@@ -73,6 +73,13 @@ Supabase の JWKS で署名を検証する（#110）。
 ログイン経路ではない。**URL へアクセストークンを載せる回避策を採らないこと**
 （アクセスログに残る）。
 
+**ログアウトは必ず `signOut({ scope: 'local' })`（#263）。** Supabase プロジェクトは他アプリと
+共有していて、`signOut()` の既定 scope は `global`。引数なしで呼ぶと同じユーザーの他アプリ・
+他端末の refresh token まで失効し、Signaly からログアウしただけで他アプリのログインが切れる。
+通常ログアウトも 403（許可外ユーザー）時の破棄も `frontend/auth.js` の `signOut()` を通すので、
+`supabase.auth.signOut` を他の場所で直接呼ばないこと（`backend/test_frontend_signout_scope.py` が固定している）。
+アカウント自体を削除する操作は現状無い。作る場合に限り、全セッション終了の意図を明示して `global` を渡す。
+
 **Cookie へフォールバックする順序に注意。** `require_auth` は Bearer の検証に失敗したら
 そこで 401/403 を返し、Cookie へ落ちない。落とすと、期限切れトークンを持つ端末が
 古い Cookie でいつまでも通り続ける（`backend/test_supabase_auth.py` が固定している）。
