@@ -2498,15 +2498,31 @@ function setNotifSegmentDisabled(segmentEl, disabled) {
 
 function renderNotifPreview(container, mode, effectiveEnabled, context) {
   if (!container) return
-  container.innerHTML = `
-    <div class="notif-mode-preview-card notif-mode-preview-card--${mode}">
-      <span class="notif-mode-preview-icon" aria-hidden="true"></span>
-      <div class="notif-mode-preview-text">
-        <strong>${notifModePreviewTitle(mode)}</strong>
-        <span>${notifModePreviewDetail(mode, effectiveEnabled, context)}</span>
-      </div>
-    </div>
-  `
+  container.innerHTML = ''
+
+  const card = document.createElement('div')
+  card.className = `notif-mode-preview-card notif-mode-preview-card--${mode}`
+
+  const icon = document.createElement('span')
+  icon.className = 'notif-mode-preview-icon'
+  icon.setAttribute('aria-hidden', 'true')
+
+  const text = document.createElement('div')
+  text.className = 'notif-mode-preview-text'
+
+  const title = document.createElement('strong')
+  title.textContent = notifModePreviewTitle(mode)
+
+  // context にはチャンネル名・グループ名がそのまま入る（呼び出し元は app.js の
+  // updateChannelNotifSettingsUI / updateGroupNotifSettingsUI）。HTML化せず
+  // textContent で入れることで、名前に <img onerror=...> 等が含まれても
+  // スクリプトとして実行されない（#286）。
+  const detail = document.createElement('span')
+  detail.textContent = notifModePreviewDetail(mode, effectiveEnabled, context)
+
+  text.append(title, detail)
+  card.append(icon, text)
+  container.appendChild(card)
 }
 
 function channelNotificationSegmentValue(channel) {
