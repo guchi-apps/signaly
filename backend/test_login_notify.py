@@ -10,11 +10,27 @@ from login_notify import (
 
 
 class TestClientIp(unittest.TestCase):
-    def test_uses_x_forwarded_for(self):
+    def test_uses_last_value_of_x_forwarded_for(self):
+        # Apache の mod_proxy は末尾に実際の接続元を追記する。先頭はクライアントが
+        # 自由に書ける値なので使わない
         request = Mock()
         request.headers = {"x-forwarded-for": "203.0.113.1, 10.0.0.1"}
         request.client = Mock(host="127.0.0.1")
+        self.assertEqual(client_ip(request), "10.0.0.1")
+
+    def test_single_value_is_unaffected(self):
+        request = Mock()
+        request.headers = {"x-forwarded-for": "203.0.113.1"}
+        request.client = Mock(host="127.0.0.1")
         self.assertEqual(client_ip(request), "203.0.113.1")
+
+    def test_spoofed_leading_value_does_not_change_result(self):
+        # 攻撃者が先頭に任意の値（いつもの回線のIPなど）を付けても、
+        # Apacheが追記した末尾の実IPが使われる（#278）
+        request = Mock()
+        request.headers = {"x-forwarded-for": "203.0.113.1, 198.51.100.9"}
+        request.client = Mock(host="127.0.0.1")
+        self.assertEqual(client_ip(request), "198.51.100.9")
 
     def test_falls_back_to_client_host(self):
         request = Mock()
