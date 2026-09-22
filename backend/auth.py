@@ -43,6 +43,22 @@ def _signer() -> URLSafeTimedSerializer:
     return URLSafeTimedSerializer(key, salt="signaly-auth")
 
 
+def validate_secret_key_config() -> None:
+    """SECRET_KEY が未設定のまま本番・トンネル環境で起動するのを防ぐ。
+
+    APP_URL が https のとき SECRET_KEY が空だと、`_signer()` がリポジトリに
+    書かれた固定鍵（"dev-only-insecure-key"）へ黙ってフォールバックし、許可
+    メールアドレスさえ分かれば誰でも signaly_session を偽造できてしまう（#282）。
+    起動時（lifespan）で例外を出して落とし、デプロイ後のヘルスチェックの
+    失敗として表面化させる。
+    """
+    if SESSION_COOKIE_SECURE and not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY が未設定です。APP_URL が https のときは "
+            "SECRET_KEY の設定が必須です（#282）"
+        )
+
+
 def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
