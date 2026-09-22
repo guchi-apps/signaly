@@ -8,6 +8,17 @@ SOURCE_HEADER = "x-signaly-source"
 
 MAX_SOURCE_LEN = 100
 
+# notifications テーブルの列幅（database.py）を超えないよう、パース結果の出口で切り詰める。
+# MySQL 8 の既定（STRICT_TRANS_TABLES）は列幅超過の INSERT を DataError にするため、
+# ここで丸めておかないと _save_notification が例外を出し、通知そのものが保存されない。
+MAX_TITLE_LEN = 500
+MAX_LEVEL_LEN = 20
+MAX_COLOR_LEN = 20
+
+# level はこの3値のみを許可し、外れた値・非文字列は "info" に丸める（docs/webhook.md）
+ALLOWED_LEVELS = frozenset({"info", "warning", "error"})
+DEFAULT_LEVEL = "info"
+
 # CI / デプロイ通知（.github/scripts/signaly-notify.sh）が embed fields に載せている
 # 送信元を表すフィールド名。前にあるものほど優先する。
 _SOURCE_FIELD_NAMES = ("app", "repository", "repo")
@@ -40,6 +51,31 @@ def discord_color_to_hex(color: Any) -> Optional[str]:
     if value < 0 or value > 0xFFFFFF:
         return None
     return f"#{value:06x}"
+
+
+def _as_text(value: Any) -> str:
+    """文字列以外は空として扱う（`.strip()` 前提のコードが AttributeError で落ちないため）。"""
+    return value if isinstance(value, str) else ""
+
+
+def _sanitize_title(value: Any) -> str:
+    """notifications.title の列幅に収まる文字列にする。"""
+    if value is None:
+        return ""
+    return str(value)[:MAX_TITLE_LEN]
+
+
+def _sanitize_level(value: Any) -> str:
+    """許可値（info/warning/error）に丸める。非文字列・想定外の値は既定値にする。"""
+    text = str(value or "").strip().lower()
+    return text if text in ALLOWED_LEVELS else DEFAULT_LEVEL
+
+
+def _sanitize_color(value: Any) -> Optional[str]:
+    """notifications.color の列幅に収まる文字列にする。未指定（None）はそのまま残す。"""
+    if value is None:
+        return None
+    return str(value)[:MAX_COLOR_LEN]
 
 
 def normalize_source(value: Any) -> Optional[str]:
@@ -117,7 +153,7 @@ def _split_content_title_body(content: str) -> tuple[str, str]:
 
 def parse_discord_payload(data: dict) -> dict:
     """Discord Execute Webhook 形式を Signaly 内部形式に変換する。"""
-    content = _normalize_newlines((data.get("content") or "").strip())
+    content = _normalize_newlines(_as_text(data.get("content")).strip())
     embeds: List[dict] = data.get("embeds") or []
     username = data.get("username")
 
@@ -145,7 +181,7 @@ def parse_discord_payload(data: dict) -> dict:
         if not title and embed.get("title"):
             title = str(embed["title"])
 
-        description = (embed.get("description") or "").strip()
+        description = _as_text(embed.get("description")).strip()
         if description:
             message_parts.append(description)
 
@@ -228,6 +264,8 @@ def parse_webhook_payload(data: dict) -> dict:
     """リクエスト JSON を Signaly 内部形式に変換する。"""
     if not isinstance(data, dict):
         raise ValueError("payload must be a JSON object")
-    if is_discord_payload(data):
-        return parse_discord_payload(data)
-    return parse_legacy_payload(data)
+    parsed = parse_discord_payload(data) if is_discord_payload(data) else parse_legacy_payload(data)
+    parsed["title"] = _sanitize_title(parsed.get("title"))
+    parsed["level"] = _sanitize_level(parsed.get("level"))
+    parsed["color"] = _sanitize_color(parsed.get("color"))
+    return parsed

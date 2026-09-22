@@ -51,6 +51,8 @@ from push import (
 )
 from webhook import SOURCE_HEADER, normalize_source, parse_webhook_payload
 
+logger = logging.getLogger(__name__)
+
 BASE_DIR = Path(__file__).parent
 FRONTEND_DIR = BASE_DIR.parent / "frontend"
 DOCS_DIR = BASE_DIR.parent / "docs"
@@ -60,6 +62,26 @@ APP_VERSION = json.loads((BASE_DIR.parent / "version.json").read_text())["versio
 _subscribers: Dict[str, List[asyncio.Queue]] = {}
 
 VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+
+# asyncio.create_task が返すタスクへの強参照を保持する（イベントループはタスクを弱参照
+# しか持たないため、保持しないと実行中に GC されうる。#285）。
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background_task(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_log_background_task_exception)
+    return task
+
+
+def _log_background_task_exception(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("バックグラウンドタスクが例外で終了しました", exc_info=exc)
 
 
 # ── DB helpers（threadpool で呼ぶ）────────────────────────────────────────────
@@ -412,7 +434,7 @@ async def _dispatch_notification(
     await asyncio.to_thread(_save_notification, entry)
     _broadcast(channel_name, "notification", entry)
 
-    asyncio.create_task(asyncio.to_thread(send_push_notifications, entry))
+    _spawn_background_task(asyncio.to_thread(send_push_notifications, entry))
     return entry
 
 
@@ -658,6 +680,7 @@ async def lifespan(app: FastAPI):
     # ここで DDL（create_all）を流さないこと。アプリ用の DB ユーザーは CRUD 権限しか
     # 持たないため、テーブルが増えるたびに起動が `CREATE command denied` で落ちる（#183）。
     # スキーマの反映はデプロイ時の backend/migrate_db.py が行う。
+    auth.validate_secret_key_config()
     auth.set_api_key_resolver(_resolve_api_key_email)
     if push_configured():
         try:
@@ -751,7 +774,7 @@ async def auth_session(payload: SessionRequest, request: Request, response: Resp
     claims = await auth.verify_supabase_claims(payload.access_token)
     email = supabase_auth.email_from_claims(claims)
     if payload.event == "login":
-        asyncio.create_task(_notify_login(email, claims, request))
+        _spawn_background_task(_notify_login(email, claims, request))
     response.set_cookie(
         auth.SESSION_COOKIE,
         auth.sign_value(email),
@@ -1203,7 +1226,7 @@ async def search_notifications(
 
 
 @app.get("/api/stream/{channel_name}")
-async def stream_events(channel_name: str, request: Request, email: str = Depends(auth.require_auth)):
+async def stream_events(channel_name: str, request: Request, email: str = Depends(auth.require_auth_sse)):
     channels = await asyncio.to_thread(_fetch_channels)
     if channel_name not in channels.values():
         raise HTTPException(status_code=404, detail="Channel not found")

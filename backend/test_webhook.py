@@ -123,6 +123,51 @@ class TestParseWebhook(unittest.TestCase):
         result = parse_webhook_payload({"message": "legacy"})
         self.assertEqual(result["message"], "legacy")
 
+    def test_title_truncated_to_column_width(self):
+        # notifications.title は VARCHAR(500)。超えると MySQL の strict mode で DataError になる
+        result = parse_webhook_payload({"title": "x" * 600, "message": "m"})
+        self.assertEqual(len(result["title"]), 500)
+
+    def test_discord_markdown_title_truncated(self):
+        # webhook.py:190 で組み立てる `[title](url)` の後に切り詰める
+        result = parse_webhook_payload({
+            "embeds": [{"title": "x" * 600, "url": "https://example.com"}],
+        })
+        self.assertEqual(len(result["title"]), 500)
+
+    def test_non_string_title_is_stringified(self):
+        # 送信側が title に文字列以外を渡しても DataError にせず str() で保存する
+        result = parse_webhook_payload({"title": 12345, "message": "m"})
+        self.assertEqual(result["title"], "12345")
+
+    def test_level_truncated_and_clamped_to_allowed_values(self):
+        result = parse_webhook_payload({"message": "m", "level": "x" * 30})
+        self.assertEqual(result["level"], "info")
+
+    def test_level_non_string_falls_back_to_info(self):
+        result = parse_webhook_payload({"message": "m", "level": {"bad": True}})
+        self.assertEqual(result["level"], "info")
+
+    def test_color_truncated_and_stringified(self):
+        result = parse_webhook_payload({"message": "m", "color": 12345678901234567890})
+        self.assertEqual(result["color"], str(12345678901234567890)[:20])
+
+    def test_color_none_stays_none(self):
+        result = parse_webhook_payload({"message": "m"})
+        self.assertIsNone(result["color"])
+
+    def test_non_string_content_is_ignored_not_raised(self):
+        result = parse_webhook_payload({"content": {"unexpected": "object"}})
+        self.assertEqual(result["title"], "")
+        self.assertEqual(result["message"], "")
+
+    def test_non_string_embed_description_is_ignored_not_raised(self):
+        result = parse_webhook_payload({
+            "embeds": [{"title": "T", "description": ["not", "a", "string"]}],
+        })
+        self.assertEqual(result["title"], "T")
+        self.assertEqual(result["message"], "")
+
 
 class TestNormalizeSource(unittest.TestCase):
     def test_trims(self):

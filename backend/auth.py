@@ -1,6 +1,9 @@
 """認証: Supabase Auth の JWT / セッション Cookie / API キー（/api/* 用）
 
-優先順位は Bearer → Cookie。
+依存関数は用途で分かれている。
+- `require_auth`     … 通常の API 用。Bearer のみ（Cookie は受け付けない）
+- `require_auth_sse` … SSE（`/api/stream/{channel}`）専用。Bearer → Cookie
+
 - `Authorization: Bearer <Supabase の access_token>` … ブラウザ・PWA の通常経路
 - `Authorization: Bearer sk_...`                     … スクリプトからの API キー
 - セッション Cookie                                   … SSE 専用
@@ -41,6 +44,22 @@ API_KEY_PREFIX = "sk_"
 def _signer() -> URLSafeTimedSerializer:
     key = SECRET_KEY or "dev-only-insecure-key"
     return URLSafeTimedSerializer(key, salt="signaly-auth")
+
+
+def validate_secret_key_config() -> None:
+    """SECRET_KEY が未設定のまま本番・トンネル環境で起動するのを防ぐ。
+
+    APP_URL が https のとき SECRET_KEY が空だと、`_signer()` がリポジトリに
+    書かれた固定鍵（"dev-only-insecure-key"）へ黙ってフォールバックし、許可
+    メールアドレスさえ分かれば誰でも signaly_session を偽造できてしまう（#282）。
+    起動時（lifespan）で例外を出して落とし、デプロイ後のヘルスチェックの
+    失敗として表面化させる。
+    """
+    if SESSION_COOKIE_SECURE and not SECRET_KEY:
+        raise RuntimeError(
+            "SECRET_KEY が未設定です。APP_URL が https のときは "
+            "SECRET_KEY の設定が必須です（#282）"
+        )
 
 
 def hash_secret(value: str) -> str:
@@ -127,18 +146,49 @@ def set_api_key_resolver(resolver) -> None:
     _resolve_api_key = resolver
 
 
-async def require_auth(request: Request) -> str:
+async def _require_bearer_auth(request: Request) -> Optional[str]:
+    """Bearer を検証して email を返す。
+
+    - Bearer が無い、または API キーが解決できない場合は None
+      （呼び出し側が Cookie を試すかどうかを決める）
+    - Supabase の access_token の検証に失敗した場合はここで 401 / 403 を上げる。
+      Cookie へフォールバックすると、期限切れトークンを持つ端末がいつまでも
+      古い Cookie で通り続けてしまうため、呼び出し側でも揉み消さないこと。
+    - API キーは発行時点のメールをDBへ書き込んでいるだけなので、Cookie と同様に
+      毎回 ALLOWED_EMAILS と突き合わせる。許可リストから外れたユーザーのキーは
+      削除されるまで通り続けてしまうため。
+    - `_resolve_api_key` は SELECT と `last_used_at` の UPDATE・commit を行う同期
+      関数なので、イベントループを止めないよう `to_thread` で呼ぶ。
+    """
     bearer = _get_bearer_token(request)
-    if bearer:
-        if bearer.startswith(API_KEY_PREFIX):
-            resolved = _resolve_api_key(bearer) if _resolve_api_key else None
-            if resolved:
-                return resolved
-        else:
-            # 検証に失敗したらここで 401 / 403 を上げる。
-            # Cookie へフォールバックすると、期限切れトークンを持つ端末が
-            # いつまでも古い Cookie で通り続けてしまう。
-            return await verify_supabase_token(bearer)
+    if not bearer:
+        return None
+    if bearer.startswith(API_KEY_PREFIX):
+        if not _resolve_api_key:
+            return None
+        email = await asyncio.to_thread(_resolve_api_key, bearer)
+        return email if email and is_allowed_email(email) else None
+    return await verify_supabase_token(bearer)
+
+
+async def require_auth(request: Request) -> str:
+    """通常の API 用。Bearer（Supabase の access_token / API キー）のみを受け付ける。
+
+    Cookie は SSE 専用（`require_auth_sse`）で、ここでは受け付けない。
+    """
+    email = await _require_bearer_auth(request)
+    if email:
+        return email
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def require_auth_sse(request: Request) -> str:
+    """SSE（`/api/stream/{channel}`）専用。EventSource は Authorization ヘッダーを
+    付けられないため、ここだけ Cookie へのフォールバックを許す。
+    """
+    email = await _require_bearer_auth(request)
+    if email:
+        return email
 
     email = _get_session_email(request)
     if email:

@@ -31,9 +31,19 @@ APP_NAME = "Signaly"  # 通知タイトルに使うアプリ名。他アプリ�
 
 
 def client_ip(request: Request) -> str:
+    """接続元IPを取り出す。
+
+    信頼できるプロキシは Apache（`deploy/apache.conf`）の1段だけで、`mod_proxy` は
+    クライアントから受け取った `X-Forwarded-For` の**末尾**に実際の接続元を追記する。
+    **先頭は攻撃者が自由に書ける値なので使わない**（#278）——先頭を使うと
+    `X-Forwarded-For: <いつもの回線のIP>` を付けるだけで「初めての接続元」警告を
+    回避できてしまう。
+    """
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        parts = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if parts:
+            return parts[-1]
     if request.client:
         return request.client.host
     return "unknown"

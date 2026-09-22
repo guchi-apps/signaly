@@ -7,7 +7,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -207,9 +207,10 @@ def _build_payload(entry: Dict[str, Any]) -> str:
     channel = entry.get("channel", "")
     notif_id = entry.get("id")
     if channel:
-        url = f"./?channel={channel}&src=push"
+        params = {"channel": channel, "src": "push"}
         if notif_id:
-            url += f"&id={notif_id}"
+            params["id"] = notif_id
+        url = f"./?{urlencode(params)}"
     else:
         url = "./"
     return json.dumps(
