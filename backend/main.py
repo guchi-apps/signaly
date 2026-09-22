@@ -680,6 +680,7 @@ async def lifespan(app: FastAPI):
     # ここで DDL（create_all）を流さないこと。アプリ用の DB ユーザーは CRUD 権限しか
     # 持たないため、テーブルが増えるたびに起動が `CREATE command denied` で落ちる（#183）。
     # スキーマの反映はデプロイ時の backend/migrate_db.py が行う。
+    auth.validate_secret_key_config()
     auth.set_api_key_resolver(_resolve_api_key_email)
     if push_configured():
         try:
