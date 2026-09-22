@@ -366,6 +366,21 @@ class TestBuildPayload(unittest.TestCase):
         payload = json.loads(_build_payload({"id": "n1", "channel": "ci", "message": "m"}))
         self.assertEqual(payload["ts"], "")
 
+    def test_url_encodes_channel_names_with_special_characters(self):
+        cases = {
+            "CI & Deploy": "CI+%26+Deploy",
+            "#ops": "%23ops",
+            "a+b": "a%2Bb",
+        }
+        for channel, encoded in cases.items():
+            with self.subTest(channel=channel):
+                payload = json.loads(
+                    _build_payload({"id": "n1", "channel": channel, "message": "m"})
+                )
+                self.assertEqual(
+                    payload["url"], f"./?channel={encoded}&src=push&id=n1"
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
