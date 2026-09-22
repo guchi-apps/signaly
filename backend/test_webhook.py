@@ -111,6 +111,33 @@ class TestParseLegacy(unittest.TestCase):
         })
         self.assertEqual(result["level"], "error")
         self.assertEqual(result["color"], "#ff0000")
+        self.assertEqual(result["fields"], [{"name": "A", "value": "B", "inline": False}])
+
+    def test_fields_not_a_list_becomes_none(self):
+        # "fields": "abc" のような値をそのまま返すと push./frontend が壊れる（#279）
+        result = parse_legacy_payload({"message": "x", "fields": "abc"})
+        self.assertIsNone(result["fields"])
+
+    def test_fields_with_non_dict_elements_are_dropped(self):
+        # "fields": [null] のような要素をそのまま返すと push./frontend が壊れる（#279）
+        result = parse_legacy_payload({
+            "message": "x",
+            "fields": [None, "bad", {"name": "A", "value": "B"}],
+        })
+        self.assertEqual(result["fields"], [{"name": "A", "value": "B", "inline": False}])
+
+    def test_fields_all_non_dict_becomes_none(self):
+        result = parse_legacy_payload({"message": "x", "fields": [None, 1, "bad"]})
+        self.assertIsNone(result["fields"])
+
+    def test_field_name_and_value_are_stringified(self):
+        # name/value が文字列以外だと push.py の f.get(...) 前提の処理には影響しないが、
+        # フロントエンドの表示・保存を揃えるため Discord 側と同じく str() する
+        result = parse_legacy_payload({
+            "message": "x",
+            "fields": [{"name": 1, "value": None, "inline": "yes"}],
+        })
+        self.assertEqual(result["fields"], [{"name": "1", "value": "", "inline": True}])
 
 
 class TestParseWebhook(unittest.TestCase):

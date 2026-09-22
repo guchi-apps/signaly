@@ -249,13 +249,21 @@ def parse_discord_payload(data: dict) -> dict:
 def parse_legacy_payload(data: dict) -> dict:
     """Signaly レガシー形式を内部形式に正規化する。"""
     fields = data.get("fields")
-    fields_list = [f for f in fields if isinstance(f, dict)] if isinstance(fields, list) else []
+    fields_list = [
+        {
+            "name": str(f.get("name") or ""),
+            "value": str(f.get("value") or ""),
+            "inline": bool(f.get("inline", False)),
+        }
+        for f in fields
+        if isinstance(f, dict)
+    ] if isinstance(fields, list) else []
     return {
         "title": data.get("title") or "",
         "message": data.get("message") or "",
         "level": data.get("level") or "info",
         "color": data.get("color"),
-        "fields": fields,
+        "fields": fields_list or None,
         "source": normalize_source(data.get("source")) or _source_from_fields(fields_list),
     }
 
