@@ -154,12 +154,20 @@ async def _require_bearer_auth(request: Request) -> Optional[str]:
     - Supabase の access_token の検証に失敗した場合はここで 401 / 403 を上げる。
       Cookie へフォールバックすると、期限切れトークンを持つ端末がいつまでも
       古い Cookie で通り続けてしまうため、呼び出し側でも揉み消さないこと。
+    - API キーは発行時点のメールをDBへ書き込んでいるだけなので、Cookie と同様に
+      毎回 ALLOWED_EMAILS と突き合わせる。許可リストから外れたユーザーのキーは
+      削除されるまで通り続けてしまうため。
+    - `_resolve_api_key` は SELECT と `last_used_at` の UPDATE・commit を行う同期
+      関数なので、イベントループを止めないよう `to_thread` で呼ぶ。
     """
     bearer = _get_bearer_token(request)
     if not bearer:
         return None
     if bearer.startswith(API_KEY_PREFIX):
-        return _resolve_api_key(bearer) if _resolve_api_key else None
+        if not _resolve_api_key:
+            return None
+        email = await asyncio.to_thread(_resolve_api_key, bearer)
+        return email if email and is_allowed_email(email) else None
     return await verify_supabase_token(bearer)
 
 

@@ -8,6 +8,7 @@ JWKS は本物の Supabase を叩かず、テスト内で生成した EC 鍵で�
 """
 
 import os
+import threading
 import time
 import unittest
 from types import SimpleNamespace
@@ -295,10 +296,34 @@ class AuthEndpointTest(SupabaseAuthTestBase):
     def test_api_key_still_works(self):
         """スクリプト向けの API キー認証は移行後もそのまま。"""
         key = auth.generate_api_key()
-        with patch.object(auth, "_resolve_api_key", lambda presented: "script@example.com"):
-            res = self.client.get("/auth/me", headers=self.bearer(key))
+        with patch.object(auth, "ALLOWED_EMAILS", {"script@example.com"}):
+            with patch.object(auth, "_resolve_api_key", lambda presented: "script@example.com"):
+                res = self.client.get("/auth/me", headers=self.bearer(key))
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.json(), {"email": "script@example.com"})
+
+    def test_api_key_of_removed_user_is_rejected(self):
+        """許可リストから外れたユーザーの API キーは、削除前でも通らなくなること（#281）。"""
+        key = auth.generate_api_key()
+        with patch.object(auth, "ALLOWED_EMAILS", set()):
+            with patch.object(auth, "_resolve_api_key", lambda presented: "script@example.com"):
+                res = self.client.get("/auth/me", headers=self.bearer(key))
+        self.assertEqual(res.status_code, 401)
+
+    def test_api_key_resolution_does_not_block_event_loop(self):
+        """DB問い合わせが同期関数のままでも、to_thread 経由でイベントループを止めないこと（#281）。"""
+        key = auth.generate_api_key()
+        calling_thread = None
+
+        def fake_resolve(presented):
+            nonlocal calling_thread
+            calling_thread = threading.current_thread()
+            return ALLOWED_EMAIL
+
+        with patch.object(auth, "_resolve_api_key", fake_resolve):
+            res = self.client.get("/auth/me", headers=self.bearer(key))
+        self.assertEqual(res.status_code, 200)
+        self.assertNotEqual(calling_thread, threading.main_thread())
 
     def test_callback_page_is_served(self):
         res = self.client.get("/auth/callback")
