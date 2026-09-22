@@ -73,6 +73,14 @@ Supabase の JWKS で署名を検証する（#110）。
 ログイン経路ではない。**URL へアクセストークンを載せる回避策を採らないこと**
 （アクセスログに残る）。
 
+**Cookie を受け付けるのは `auth.require_auth_sse`（SSE専用）だけ（#283）。** 通常の API
+（`auth.require_auth`）は Bearer のみを受け付け、Cookie が付いていても無視する。`SameSite=Lax`
+で別サイトからの CSRF は大部分防げても、SameSite の「サイト」は登録ドメイン単位なので、
+同じ `gucchii.com` 配下の他アプリからのリクエストには Cookie が付いてしまう。Cookie の寿命
+（1日）が JWT（1時間）よりずっと長いのは SSE 専用だからこそ許される前提で、通常 API まで
+Cookie を通すとこの前提が崩れる。**新しいエンドポイントには `auth.require_auth` を使うこと**
+——SSE 以外で `auth.require_auth_sse` を使わない。
+
 **ログアウトは必ず `signOut({ scope: 'local' })`（#263）。** Supabase プロジェクトは他アプリと
 共有していて、`signOut()` の既定 scope は `global`。引数なしで呼ぶと同じユーザーの他アプリ・
 他端末の refresh token まで失効し、Signaly からログアウしただけで他アプリのログインが切れる。

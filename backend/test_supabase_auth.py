@@ -189,13 +189,22 @@ class AuthEndpointTest(SupabaseAuthTestBase):
         self.assertEqual(res.status_code, 403)
 
     def test_expired_token_does_not_fall_back_to_cookie(self):
-        """期限切れのトークンを持つ端末が、古い Cookie で通り続けないこと。"""
-        self.client.post("/auth/session", json={"access_token": make_token()})
-        self.assertEqual(self.client.get("/auth/me").status_code, 200)
+        """期限切れのトークンを持つ端末が、SSE で古い Cookie にフォールバックしないこと。
 
-        now = int(time.time())
-        expired = make_token(exp=now - 10, iat=now - 3600)
-        res = self.client.get("/auth/me", headers=self.bearer(expired))
+        Cookie フォールバックが起こり得るのは require_auth_sse（SSE専用）だけなので、
+        ここは /api/stream で確認する。
+        """
+        self.client.post("/auth/session", json={"access_token": make_token()})
+        with patch.object(main, "_fetch_channels", lambda: {}):
+            self.assertEqual(
+                self.client.get("/api/stream/unknown-channel").status_code, 404
+            )
+
+            now = int(time.time())
+            expired = make_token(exp=now - 10, iat=now - 3600)
+            res = self.client.get(
+                "/api/stream/unknown-channel", headers=self.bearer(expired)
+            )
         self.assertEqual(res.status_code, 401)
 
     def test_session_issues_cookie_for_sse(self):
@@ -204,8 +213,15 @@ class AuthEndpointTest(SupabaseAuthTestBase):
         self.assertEqual(res.json(), {"email": ALLOWED_EMAIL})
         self.assertIn(auth.SESSION_COOKIE, self.client.cookies)
 
-        # Authorization を付けなくても Cookie だけで通る（EventSource 用）
-        self.assertEqual(self.client.get("/auth/me").status_code, 200)
+        # Authorization を付けなくても Cookie だけで SSE は通る（EventSource 用）。
+        # チャンネルが無い扱いで 404 になるが、401（未認証）ではないことで
+        # Cookie 単体で認証を通過したと分かる
+        with patch.object(main, "_fetch_channels", lambda: {}):
+            res = self.client.get("/api/stream/unknown-channel")
+        self.assertEqual(res.status_code, 404)
+
+        # 通常の API は Cookie だけでは通らない（SSE 専用）
+        self.assertEqual(self.client.get("/auth/me").status_code, 401)
 
     def test_session_notifies_login_only_when_event_is_login(self):
         """ログイン通知が飛ぶのは認証コールバック直後だけ。
@@ -258,13 +274,23 @@ class AuthEndpointTest(SupabaseAuthTestBase):
     def test_logout_clears_cookie(self):
         self.client.post("/auth/session", json={"access_token": make_token()})
         self.client.post("/auth/logout")
-        self.assertEqual(self.client.get("/auth/me").status_code, 401)
+        with patch.object(main, "_fetch_channels", lambda: {}):
+            res = self.client.get("/api/stream/unknown-channel")
+        self.assertEqual(res.status_code, 401)
 
     def test_cookie_of_removed_user_stops_working(self):
         """許可リストから外れたら、発行済み Cookie も通らなくなること。"""
         self.client.post("/auth/session", json={"access_token": make_token()})
         with patch.object(auth, "ALLOWED_EMAILS", set()):
-            self.assertEqual(self.client.get("/auth/me").status_code, 401)
+            with patch.object(main, "_fetch_channels", lambda: {}):
+                res = self.client.get("/api/stream/unknown-channel")
+        self.assertEqual(res.status_code, 401)
+
+    def test_cookie_alone_is_rejected_by_normal_api(self):
+        """Cookie は SSE 専用。DELETE のような通常 API は Cookie だけでは通らない（#283）。"""
+        self.client.post("/auth/session", json={"access_token": make_token()})
+        res = self.client.delete("/api/channels/some-channel-id")
+        self.assertEqual(res.status_code, 401)
 
     def test_api_key_still_works(self):
         """スクリプト向けの API キー認証は移行後もそのまま。"""

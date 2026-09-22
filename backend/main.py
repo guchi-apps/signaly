@@ -1225,7 +1225,7 @@ async def search_notifications(
 
 
 @app.get("/api/stream/{channel_name}")
-async def stream_events(channel_name: str, request: Request, email: str = Depends(auth.require_auth)):
+async def stream_events(channel_name: str, request: Request, email: str = Depends(auth.require_auth_sse)):
     channels = await asyncio.to_thread(_fetch_channels)
     if channel_name not in channels.values():
         raise HTTPException(status_code=404, detail="Channel not found")
