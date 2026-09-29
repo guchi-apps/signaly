@@ -126,8 +126,8 @@ self.addEventListener('push', (event) => {
 
       await self.registration.showNotification(data.title || 'Signaly', {
         body: data.body || '',
-        icon: 'icon-192.png?v=3.1.18',
-        badge: 'badge-72.png?v=3.1.18',
+        icon: 'icon-192.png?v=3.1.19',
+        badge: 'badge-72.png?v=3.1.19',
         tag: data.id || undefined,
         data: {
           url: data.url || './',
