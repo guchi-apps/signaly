@@ -1,6 +1,6 @@
 'use strict'
 
-const APP_VERSION = '3.1.22'
+const APP_VERSION = '3.1.23'
 
 const APP_CHANGELOG = [
   {
