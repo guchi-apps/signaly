@@ -1,8 +1,15 @@
 'use strict'
 
-const APP_VERSION = '3.1.24'
+const APP_VERSION = '3.2.0'
 
 const APP_CHANGELOG = [
+  {
+    version: '3.2.0',
+    date: '2026-10-10',
+    changes: [
+      'ログインできるユーザーの管理を、StatusHub の共通アクセス設定にまとめました。許可の追加・取り消しが StatusHub 側の設定で一元的に反映されます。',
+    ],
+  },
   {
     version: '1.5.8',
     date: '2026-07-21',
