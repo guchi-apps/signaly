@@ -128,7 +128,10 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `DB_ADMIN_USER` / `DB_ADMIN_PASSWORD` | マイグレーション専用ユーザー（DDL 権限あり）。`backend/migrate_db.py` の実行中だけ渡す。`.env` へは書かない |
 | `SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY` | Supabase Auth の接続先（publishable key はブラウザへ配る前提の公開値） |
 | `APP_URL` | ベース URL |
-| `ALLOWED_EMAILS` | ログイン許可メール（カンマ区切り。API 側でも判定する） |
+| `ISSUE_DECK_URL` / `SHARED_TOKEN_API_SECRET` | issue-deck の共有トークン API（StatusHub の判定用トークン `SIGNALY_ACCESS_APP_TOKEN` を読む） |
+| `ACCESS_API_URL` | StatusHub の判定API の宛先（未設定は本番の `https://admin.gucchii.com`。開発で差し替えるとき用） |
+| `ACCESS_APP_TOKEN` | 判定用トークンの直接指定（ローカル開発用。共有トークン API が使えるときはそちらが優先） |
+| `ALLOWED_EMAILS` | **判定には使わない**（旧許可リスト。移行CLIの取り込み元として残しているだけ） |
 | `SIGNALY_LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない）。全アプリ共通のログインチャンネル |
 | `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |

@@ -21,6 +21,7 @@ os.environ.setdefault("DB_NAME", "ci_signaly")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+import access  # noqa: E402
 import auth  # noqa: E402
 import main  # noqa: E402
 import supabase_auth  # noqa: E402
@@ -46,6 +47,7 @@ def make_token(key=None, algorithm="ES256", **overrides) -> str:
         "iat": now,
         "exp": now + 3600,
         "role": "authenticated",
+        "app_metadata": {"provider": "google", "providers": ["google"]},
     }
     for key_name, value in overrides.items():
         if value is None:
@@ -53,6 +55,11 @@ def make_token(key=None, algorithm="ES256", **overrides) -> str:
         else:
             claims[key_name] = value
     return jwt.encode(claims, key or _private_key, algorithm=algorithm)
+
+
+def _allow_only(emails):
+    """StatusHub の判定を、許可メールの集合で置き換える（通信しない）。"""
+    return lambda subject: subject.email.lower() in emails
 
 
 class SupabaseAuthTestBase(unittest.TestCase):
@@ -73,7 +80,7 @@ class SupabaseAuthTestBase(unittest.TestCase):
                     get_signing_key_from_jwt=lambda token: SimpleNamespace(key=_public_key)
                 ),
             ),
-            patch.object(auth, "ALLOWED_EMAILS", {ALLOWED_EMAIL}),
+            patch.object(access, "is_allowed", _allow_only({ALLOWED_EMAIL})),
             patch.object(auth, "SECRET_KEY", "test-secret-key"),
         ]
         for p in patches:
@@ -282,7 +289,7 @@ class AuthEndpointTest(SupabaseAuthTestBase):
     def test_cookie_of_removed_user_stops_working(self):
         """許可リストから外れたら、発行済み Cookie も通らなくなること。"""
         self.client.post("/auth/session", json={"access_token": make_token()})
-        with patch.object(auth, "ALLOWED_EMAILS", set()):
+        with patch.object(access, "is_allowed", _allow_only(set())):
             with patch.object(main, "_fetch_channels", lambda: {}):
                 res = self.client.get("/api/stream/unknown-channel")
         self.assertEqual(res.status_code, 401)
@@ -296,7 +303,7 @@ class AuthEndpointTest(SupabaseAuthTestBase):
     def test_api_key_still_works(self):
         """スクリプト向けの API キー認証は移行後もそのまま。"""
         key = auth.generate_api_key()
-        with patch.object(auth, "ALLOWED_EMAILS", {"script@example.com"}):
+        with patch.object(access, "is_allowed", _allow_only({"script@example.com"})):
             with patch.object(auth, "_resolve_api_key", lambda presented: "script@example.com"):
                 res = self.client.get("/auth/me", headers=self.bearer(key))
         self.assertEqual(res.status_code, 200)
@@ -305,7 +312,7 @@ class AuthEndpointTest(SupabaseAuthTestBase):
     def test_api_key_of_removed_user_is_rejected(self):
         """許可リストから外れたユーザーの API キーは、削除前でも通らなくなること（#281）。"""
         key = auth.generate_api_key()
-        with patch.object(auth, "ALLOWED_EMAILS", set()):
+        with patch.object(access, "is_allowed", _allow_only(set())):
             with patch.object(auth, "_resolve_api_key", lambda presented: "script@example.com"):
                 res = self.client.get("/auth/me", headers=self.bearer(key))
         self.assertEqual(res.status_code, 401)
