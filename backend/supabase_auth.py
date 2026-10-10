@@ -113,3 +113,20 @@ def email_from_claims(claims: dict) -> str:
 def user_id_from_claims(claims: dict) -> str:
     """Supabase のユーザー ID（他アプリと共通の UUID）。"""
     return str(claims.get("sub") or "")
+
+
+def email_verified_from_claims(claims: dict) -> bool:
+    """メールが IdP によって確認済みか。判定API（StatusHub）へ送る `emailVerified` の根拠。
+
+    **`user_metadata` は根拠にしない。** 利用者が `updateUser` で書き換えられるため、
+    `email_verified: true` を自分で名乗れてしまう。`app_metadata` は Supabase だけが書く。
+    Signaly のログインは Google のみで、Google はメールを確認済みのものだけを返す。
+    """
+    app_metadata = claims.get("app_metadata")
+    if not isinstance(app_metadata, dict):
+        return False
+    providers = app_metadata.get("providers")
+    names = set(providers) if isinstance(providers, list) else set()
+    if isinstance(app_metadata.get("provider"), str):
+        names.add(app_metadata["provider"])
+    return "google" in names

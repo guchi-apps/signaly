@@ -8,6 +8,9 @@
 - `Authorization: Bearer sk_...`                     … スクリプトからの API キー
 - セッション Cookie                                   … SSE 専用
 
+**ログイン許可の判定は StatusHub の共通アクセス設定（`access.py`・#319）。** 旧環境変数
+`ALLOWED_EMAILS` は判定にもフォールバックにも使わない。
+
 **Cookie が残っているのは EventSource が Authorization ヘッダーを付けられないため。**
 `POST /auth/session` が Supabase の JWT を検証したうえでのみ発行する短命 Cookie で、
 Google OAuth のような独自ログイン経路はもう存在しない。
@@ -17,17 +20,15 @@ import asyncio
 import hashlib
 import os
 import secrets
-from typing import Optional, Set
+from typing import Optional
 
 from fastapi import HTTPException, Request
 from itsdangerous import BadData, URLSafeTimedSerializer
 
+import access
 import supabase_auth
 
 APP_URL = os.getenv("APP_URL", "/")
-ALLOWED_EMAILS: Set[str] = {
-    e.strip().lower() for e in os.getenv("ALLOWED_EMAILS", "").split(",") if e.strip()
-}
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 
 SESSION_COOKIE = "signaly_session"
@@ -82,6 +83,16 @@ def load_signed_value(token: str, max_age: int) -> str:
     return _signer().loads(token, max_age=max_age)
 
 
+def _server_subject(email: str) -> access.Subject:
+    """Cookie・API キーのように、サーバー自身が発行した資格から作る主体。
+
+    どちらも「Supabase の JWT を検証し、許可された利用者へ発行した」ものなので、メールは
+    サーバーが確かめたものとして扱える。Supabase のユーザー ID は保持していないため、
+    メールから作った安定した ID を `sub` に使う（判定APIのキャッシュ・記録の単位は sub+メール）。
+    """
+    return access.Subject(sub=f"email:{email.lower()}", email=email, email_verified=True)
+
+
 def _get_session_email(request: Request) -> Optional[str]:
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
@@ -90,8 +101,8 @@ def _get_session_email(request: Request) -> Optional[str]:
         email = load_signed_value(token, SESSION_MAX_AGE)
     except BadData:
         return None
-    # Cookie 発行後に許可リストから外れた場合に備え、毎回引き直す
-    return email if email in ALLOWED_EMAILS else None
+    # Cookie 発行後に許可を取り消された場合に備え、毎回判定し直す（結果は ttl だけキャッシュされる）
+    return email if is_allowed_email(email) else None
 
 
 def _get_bearer_token(request: Request) -> Optional[str]:
@@ -107,7 +118,8 @@ def get_session_email(request: Request) -> Optional[str]:
 
 
 def is_allowed_email(email: str) -> bool:
-    return bool(email) and email.lower() in ALLOWED_EMAILS
+    """サーバーが発行した資格（Cookie・API キー）のメールを判定する。同期（通信を伴いうる）。"""
+    return bool(email) and access.is_allowed(_server_subject(email))
 
 
 async def verify_supabase_claims(token: str) -> dict:
@@ -123,7 +135,13 @@ async def verify_supabase_claims(token: str) -> dict:
         raise HTTPException(status_code=e.status, detail=e.message)
 
     email = supabase_auth.email_from_claims(claims)
-    if not is_allowed_email(email):
+    subject = access.Subject(
+        sub=supabase_auth.user_id_from_claims(claims),
+        email=email,
+        email_verified=supabase_auth.email_verified_from_claims(claims),
+    )
+    # 判定APIへの問い合わせは同期の通信なので、イベントループを止めないよう to_thread で呼ぶ
+    if not email or not await asyncio.to_thread(access.is_allowed, subject):
         raise HTTPException(
             status_code=403,
             detail="このアカウントはアクセスが許可されていません",
@@ -155,7 +173,7 @@ async def _require_bearer_auth(request: Request) -> Optional[str]:
       Cookie へフォールバックすると、期限切れトークンを持つ端末がいつまでも
       古い Cookie で通り続けてしまうため、呼び出し側でも揉み消さないこと。
     - API キーは発行時点のメールをDBへ書き込んでいるだけなので、Cookie と同様に
-      毎回 ALLOWED_EMAILS と突き合わせる。許可リストから外れたユーザーのキーは
+      毎回 StatusHub の判定と突き合わせる。許可を取り消されたユーザーのキーは
       削除されるまで通り続けてしまうため。
     - `_resolve_api_key` は SELECT と `last_used_at` の UPDATE・commit を行う同期
       関数なので、イベントループを止めないよう `to_thread` で呼ぶ。
@@ -167,7 +185,9 @@ async def _require_bearer_auth(request: Request) -> Optional[str]:
         if not _resolve_api_key:
             return None
         email = await asyncio.to_thread(_resolve_api_key, bearer)
-        return email if email and is_allowed_email(email) else None
+        if not email or not await asyncio.to_thread(is_allowed_email, email):
+            return None
+        return email
     return await verify_supabase_token(bearer)
 
 
@@ -190,7 +210,7 @@ async def require_auth_sse(request: Request) -> str:
     if email:
         return email
 
-    email = _get_session_email(request)
+    email = await asyncio.to_thread(_get_session_email, request)
     if email:
         return email
 

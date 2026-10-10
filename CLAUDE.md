@@ -37,7 +37,7 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 一致することを確認する（このリポジトリに順序チェックのCIは無く、ズレても誰も気付かない）。
 
 ```bash
-diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,85p' .github/workflows/deploy.yml)
+diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,87p' .github/workflows/deploy.yml)
 ```
 
 ### エンドポイントは MySQL 無しで検証できる
@@ -64,8 +64,8 @@ Supabase の JWKS で署名を検証する（#110）。
 
 **JWT をデコードだけで通さないこと。** ペイロードは誰でも作れる。`PyJWT` の
 `PyJWKClient` で公開鍵を引き、`exp` / `iss` / `aud` まで検証する。許可ユーザーの判定は
-`ALLOWED_EMAILS` で**API 側でも**行う（403 を返す。401 にするとフロントエンドが
-「トークンを更新すれば通る」と誤解する）。
+**StatusHub の共通アクセス設定（判定API）で API 側でも**行う（403 を返す。401 にすると
+フロントエンドが「トークンを更新すれば通る」と誤解する）。
 
 **セッション Cookie を消さないこと。** `EventSource` は Authorization ヘッダーを
 付けられないため、SSE（`/api/stream/{channel}`）だけは Cookie で通す。この Cookie は
@@ -115,6 +115,18 @@ Cookie を通すとこの前提が崩れる。**新しいエンドポイント�
 ログイン通知は `POST /auth/session` に `event: "login"` が付いたときだけ `login_notify.py`
 から送る（この `event` を付けるのは `frontend/auth/callback.html` だけ。**トークン更新のたびに
 付けないこと**——ログインしていないのに通知が飛ぶ）。
+
+**ログイン許可の判定は `backend/access.py`（StatusHub の判定API・#319）。旧 `ALLOWED_EMAILS` を
+判定にもフォールバックにも使わないこと。** 判定APIが使えないときに旧リストで通すと、StatusHub で
+取り消した利用者が通ってしまう。契約は `ttlSeconds`（30秒）だけキャッシュし、取得できないときは
+直前の判定を `maxStaleSeconds`（5分）まで使い、超えたら拒否・一度も判定できていない利用者は拒否する。
+アプリ別トークンは issue-deck の共有トークン `SIGNALY_ACCESS_APP_TOKEN`（StatusHub 管理画面の
+「トークン発行」が自動で書き込む）を `ISSUE_DECK_URL`・`SHARED_TOKEN_API_SECRET` で読み、トークンが
+取れなければ全員拒否になる。`lifespan` のハートビート（4分ごと）が管理画面の「反映済み」の根拠。
+**`emailVerified` は JWT の `app_metadata`（Supabase だけが書く）から決める。`user_metadata` は
+利用者が書き換えられるので根拠にしない。** Cookie・API キーは Supabase のユーザー ID を持たないため、
+メールから作った `sub`（`email:<メール>`）で判定する。ローカルでは `ACCESS_APP_TOKEN` に判定用
+トークンを直接入れられる（`ISSUE_DECK_URL` / `SHARED_TOKEN_API_SECRET` が揃うときは共有トークンが優先）。
 
 ### 通知チャンネルと送信元（source）
 
