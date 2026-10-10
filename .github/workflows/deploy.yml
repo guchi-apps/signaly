@@ -70,9 +70,11 @@ jobs:
       HOST: ${{ secrets.SERVER_HOST }}
       SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
       SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
+      ISSUE_DECK_URL: ${{ vars.APP_BASE_URL }}
       SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
       SUPABASE_URL: ${{ vars.SUPABASE_PROJECT_URL }}
       USERNAME: ${{ secrets.SERVER_USERNAME }}
+      SHARED_TOKEN_API_SECRET: ${{ secrets.SHARED_TOKEN_API_SECRET }}
       ALLOWED_EMAILS: ${{ secrets.ALLOWED_EMAILS }}
       APP_URL: ${{ secrets.APP_URL }}
       DB_NAME: ${{ secrets.DB_NAME }}
@@ -113,6 +115,8 @@ jobs:
           SUPABASE_PUBLISHABLE_KEY: ${{ env.SUPABASE_PUBLISHABLE_KEY }}
           APP_URL:              ${{ env.APP_URL }}
           ALLOWED_EMAILS:       ${{ env.ALLOWED_EMAILS }}
+          ISSUE_DECK_URL:       ${{ env.ISSUE_DECK_URL }}
+          SHARED_TOKEN_API_SECRET: ${{ env.SHARED_TOKEN_API_SECRET }}
           SECRET_KEY:           ${{ env.SECRET_KEY }}
           SIGNALY_LOGIN_WEBHOOK_URL: ${{ env.SIGNALY_LOGIN_WEBHOOK_URL }}
           VAPID_PUBLIC_KEY:     ${{ env.VAPID_PUBLIC_KEY }}
@@ -132,6 +136,8 @@ jobs:
           SUPABASE_PUBLISHABLE_KEY_B64=$(b64 "$SUPABASE_PUBLISHABLE_KEY")
           APP_URL_B64=$(b64 "$APP_URL")
           ALLOWED_EMAILS_B64=$(b64 "$ALLOWED_EMAILS")
+          ISSUE_DECK_URL_B64=$(b64 "$ISSUE_DECK_URL")
+          SHARED_TOKEN_API_SECRET_B64=$(b64 "$SHARED_TOKEN_API_SECRET")
           SECRET_KEY_B64=$(b64 "$SECRET_KEY")
           SIGNALY_LOGIN_WEBHOOK_URL_B64=$(b64 "$SIGNALY_LOGIN_WEBHOOK_URL")
           VAPID_PUBLIC_KEY_B64=$(b64 "$VAPID_PUBLIC_KEY")
@@ -184,6 +190,8 @@ jobs:
             sync_env_var SUPABASE_PUBLISHABLE_KEY '${SUPABASE_PUBLISHABLE_KEY_B64}'
             sync_env_var APP_URL              '${APP_URL_B64}'
             sync_env_var ALLOWED_EMAILS       '${ALLOWED_EMAILS_B64}'
+            sync_env_var ISSUE_DECK_URL       '${ISSUE_DECK_URL_B64}'
+            sync_env_var SHARED_TOKEN_API_SECRET '${SHARED_TOKEN_API_SECRET_B64}'
             sync_env_var SECRET_KEY           '${SECRET_KEY_B64}'
             sync_env_var SIGNALY_LOGIN_WEBHOOK_URL '${SIGNALY_LOGIN_WEBHOOK_URL_B64}'
             sync_env_var VAPID_PUBLIC_KEY     '${VAPID_PUBLIC_KEY_B64}'

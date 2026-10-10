@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, or_
 
+import access
 import auth
 import login_origin
 import supabase_auth
@@ -675,6 +676,16 @@ def _delete_push_subscription(endpoint: str) -> None:
 
 # ── App ───────────────────────────────────────────────────────────────────────
 
+async def _access_heartbeat_loop():
+    """StatusHub へ反映状況（appliedVersion）を伝える。5 分以内ごとに 1 回（#319）。
+
+    失敗しても止めない（失敗は access 側がログへ出す）。管理画面の「反映済み」の根拠になる。
+    """
+    while True:
+        await asyncio.to_thread(access.send_heartbeat)
+        await asyncio.sleep(access.HEARTBEAT_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ここで DDL（create_all）を流さないこと。アプリ用の DB ユーザーは CRUD 権限しか
@@ -688,7 +699,11 @@ async def lifespan(app: FastAPI):
             logging.info("Web Push (VAPID) configured OK")
         except Exception:
             logging.exception("Web Push (VAPID) key load failed — push notifications disabled")
-    yield
+    heartbeat_task = asyncio.create_task(_access_heartbeat_loop())
+    try:
+        yield
+    finally:
+        heartbeat_task.cancel()
 
 
 app = FastAPI(title="Signaly", lifespan=lifespan)
