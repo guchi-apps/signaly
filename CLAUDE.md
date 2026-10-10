@@ -37,7 +37,7 @@ CI は `ci_signaly` を使っている。**忘れると import の時点で落�
 一致することを確認する（このリポジトリに順序チェックのCIは無く、ズレても誰も気付かない）。
 
 ```bash
-diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,87p' .github/workflows/deploy.yml)
+diff <(bash scripts/generate-workflow-env-block.sh) <(sed -n '64,86p' .github/workflows/deploy.yml)
 ```
 
 ### エンドポイントは MySQL 無しで検証できる
