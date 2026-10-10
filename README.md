@@ -131,7 +131,6 @@ GitHub Actions の `ci.yml` も同じテストを `develop` への push と PR�
 | `ISSUE_DECK_URL` / `SHARED_TOKEN_API_SECRET` | issue-deck の共有トークン API（StatusHub の判定用トークン `SIGNALY_ACCESS_APP_TOKEN` を読む） |
 | `ACCESS_API_URL` | StatusHub の判定API の宛先（未設定は本番の `https://admin.gucchii.com`。開発で差し替えるとき用） |
 | `ACCESS_APP_TOKEN` | 判定用トークンの直接指定（ローカル開発用。共有トークン API が使えるときはそちらが優先） |
-| `ALLOWED_EMAILS` | **判定には使わない**（旧許可リスト。移行CLIの取り込み元として残しているだけ） |
 | `SIGNALY_LOGIN_WEBHOOK_URL` | ログイン通知先 Webhook URL（未設定なら通知しない）。全アプリ共通のログインチャンネル |
 | `SECRET_KEY` | SSE 用セッション Cookie の署名 |
 | `VAPID_*` | Web Push |
@@ -217,7 +216,7 @@ issue-deck の画面からは Actions の **Sync secrets**（`.github/workflows/
 | アイテム | フィールド | 用途 |
 |---------|-----------|------|
 | `signaly` | `app-url` | `https://signaly.gucchii.com/` |
-| `signaly` | `allowed-emails` / `secret-key` | ログイン許可・SSE 用 Cookie の署名 |
+| `signaly` | `secret-key` | SSE 用 Cookie の署名 |
 | `Notify` | `login-webhook-url` | ログイン通知（全アプリ共通。GitHub 側は organization の `SIGNALY_LOGIN_WEBHOOK_URL`） |
 | `Supabase` | `project-url` / `publishable-key` | Supabase Auth（全アプリ共通。GitHub 側は organization の variable） |
 | `signaly` | `vapid-*` | Web Push |
