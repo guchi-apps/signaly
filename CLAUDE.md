@@ -311,6 +311,14 @@ GRANT 文を添えて失敗するので、そのメッセージが出たとき�
 **`package.json` ではなく `version.json`**（`{"version": "1.5.8"}`）。
 更新は `scripts/bump_version.py`。**手で書き換えないこと。**
 
+**リリースworkflowは確定版番号で呼ぶ（#342）。** `release-develop-to-main.yml` の `bump-command` は
+`python3 scripts/bump_version.py "$NEW_VERSION"`。共通の公開準備は予約済み・タグ済みの版を飛ばして
+`NEW_VERSION` を計算するため、`"$BUMP_KIND"`（上げ幅）から再計算すると欠番のぶんだけ版がずれる。
+スクリプトは現在版より小さい版を拒否し、同じ版は何も変えずに通す（再試行で二重バンプしない）。
+入口は `candidate_request` / `finalize_request`（issue-deck#4604）。採用タグは `workflows/v52`
+（`develop` 同期pushによる未依頼バンプの防止 issue-deck#4650/#4652 を含むことを確認）。
+**v51以上という番号だけで最新対応と判断しないこと**——更新時は必要な修正がタグに入っているかを確かめる。
+
 **変更内容が空のリリースでは、更新履歴（`frontend/changelog.js`）へエントリを作らない（#268）。**
 `bump_version.py` は環境変数 `RELEASE_CHANGELOG`（develop→main のリリースワークフローが渡す）を
 読み、空ならバージョンだけを上げる。かつては「（変更内容を追記してください）」という仮の文言を

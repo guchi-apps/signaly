@@ -6,6 +6,11 @@
   python scripts/bump_version.py patch   # 0.1.0 -> 0.1.1
   python scripts/bump_version.py minor   # 0.1.0 -> 0.2.0
   python scripts/bump_version.py major   # 0.1.0 -> 1.0.0
+  python scripts/bump_version.py 0.1.5   # 確定版番号を直接指定（0.1.0 -> 0.1.5）
+
+確定版番号（X.Y.Z）は、共通の公開準備が予約済み・タグ済みの版を飛ばして計算した NEW_VERSION を
+そのまま適用するための入口（#342）。上げ幅から再計算すると欠番のぶんだけ版がずれる。
+現在の版より小さい版は拒否し、現在の版と同じ版は何も変えずに通す（再試行で二重にバンプしない）。
 
 更新履歴に載せる文面は環境変数 RELEASE_CHANGELOG から受け取る（develop→main のリリース
 ワークフローが渡す。改行区切り・箇条書き記号は付いていても外す）。
@@ -66,6 +71,23 @@ def bump(version: str, kind: str) -> str:
     if kind == "minor":
         return f"{major}.{minor + 1}.0"
     return f"{major}.{minor}.{patch + 1}"
+
+
+VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def resolve_version(version: str, arg: str) -> str:
+    """引数（patch/minor/major または確定版 X.Y.Z）から適用する版を決める。
+
+    確定版は現在の版以上のみ許可する。同じ版は冪等に通し、小さい版は ValueError。
+    """
+    if arg in ("patch", "minor", "major"):
+        return bump(version, arg)
+    if not VERSION_PATTERN.match(arg):
+        raise ValueError(f"版の指定が正しくありません: {arg}")
+    if tuple(map(int, arg.split("."))) < tuple(map(int, version.split("."))):
+        raise ValueError(f"現在の版 {version} より小さい版は指定できません: {arg}")
+    return arg
 
 
 def today_jst() -> str:
@@ -131,15 +153,18 @@ def insert_changelog_entry(
 
 
 def main() -> None:
-    if len(sys.argv) != 2 or sys.argv[1] not in ("patch", "minor", "major"):
-        print("使い方: python scripts/bump_version.py [patch|minor|major]")
+    usage = "使い方: python scripts/bump_version.py [patch|minor|major|X.Y.Z]"
+    if len(sys.argv) != 2:
+        print(usage)
         sys.exit(1)
-
-    kind = sys.argv[1]
 
     data = json.loads(VERSION_FILE.read_text())
     old_version = data["version"]
-    new_version = bump(old_version, kind)
+    try:
+        new_version = resolve_version(old_version, sys.argv[1])
+    except ValueError as e:
+        print(f"{e}\n{usage}")
+        sys.exit(1)
 
     data["version"] = new_version
     VERSION_FILE.write_text(

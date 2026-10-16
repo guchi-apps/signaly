@@ -276,6 +276,7 @@ APP_URL=https://signaly.gucchii.com/
 python scripts/bump_version.py patch   # 1.0.0 → 1.0.1
 python scripts/bump_version.py minor   # 1.0.0 → 1.1.0
 python scripts/bump_version.py major   # 1.0.0 → 2.0.0
+python scripts/bump_version.py 1.0.4   # 確定版番号を直接指定（リリースワークフローはこの形で呼ぶ）
 ```
 
 通常は `develop`→`main` のリリースワークフローが呼び、`RELEASE_CHANGELOG`（利用者向けの変更内容）を

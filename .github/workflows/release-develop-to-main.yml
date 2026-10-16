@@ -21,6 +21,18 @@ on:
         type: choice
         default: auto
         options: [auto, patch, minor, major]
+      # 新方式（候補作成→公開準備→本番反映）の起動入口。issue-deckの画面から渡る
+      # （guchi-apps/issue-deck#4604）。未指定（空）なら従来どおりの動き。
+      candidate_request:
+        description: "候補作成の依頼（issue-deckが渡す。手動実行では空のまま）"
+        required: false
+        type: string
+        default: ""
+      finalize_request:
+        description: "公開準備の依頼（issue-deckが渡す。手動実行では空のまま）"
+        required: false
+        type: string
+        default: ""
   # バンプPRがdevelopへマージされバージョンが変わったときに再起動して、develop→mainのPRを
   # 自動作成する。通常のフィーチャーpushでは変わらないため起動しない。
   push:
@@ -39,13 +51,17 @@ jobs:
       # pushトリガー（バンプPRのマージ）で起動したときは`inputs`自体が無いため空文字を渡す。
       # そちらの実行はdevelop→mainのPR作成だけを行い、上げ幅を使わない。
       bump-kind: ${{ github.event_name == 'workflow_dispatch' && inputs.bump_kind || '' }}
+      candidate-request: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_request || '' }}
+      finalize-request: ${{ github.event_name == 'workflow_dispatch' && inputs.finalize_request || '' }}
       # Nodeを一切使わないため package.json が無い（deploy.yml も version.json を読む）。
       version-file: version.json
       # npm version が使えないため、既存のPythonスクリプトで書き換える。
-      # **このスクリプトは上げ幅（patch/minor/major）を受け取る。** バージョン番号そのものを
-      # 渡すと「使い方: ... [patch|minor|major]」で失敗する。version.jsonの更新に加えて
-      # changelog.jsへのスタブ追加とアセットの?v=同期まで行う（npmのversionライフサイクル相当）。
-      bump-command: python3 scripts/bump_version.py "$BUMP_KIND"
+      # **確定版番号（NEW_VERSION）を渡す。** 公開準備は予約済み・タグ済みの版を飛ばして
+      # NEW_VERSIONを計算するため、上げ幅（BUMP_KIND）から再計算すると欠番のぶんだけずれる（#342）。
+      # スクリプトは patch/minor/major と X.Y.Z の両方を受け取り、現在版より小さい版は拒否、
+      # 同じ版は何も変えずに通す（再試行で二重バンプしない）。version.jsonの更新に加えて
+      # changelog.jsのAPP_VERSION・スタブ追加とアセットの?v=同期まで行う。
+      bump-command: python3 scripts/bump_version.py "$NEW_VERSION"
     secrets: inherit
     # **呼ばれる側の権限はcallerの付与範囲を超えられない。** issues が write なのは、
     # 呼ばれる側の notify-failure ジョブがリリース対象issueへ失敗を通知するため。
