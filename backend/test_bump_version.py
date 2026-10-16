@@ -117,13 +117,13 @@ class InsertChangelogEntryTest(unittest.TestCase):
 class MainTest(unittest.TestCase):
     """`bump_version.py patch` を一時ディレクトリで通しで動かす。"""
 
-    def _run(self, release_changelog):
+    def _run(self, release_changelog, arg="patch", start="1.0.0"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "frontend").mkdir()
             version_file = root / "version.json"
             changelog_file = root / "frontend" / "changelog.js"
-            version_file.write_text(json.dumps({"version": "1.0.0"}), encoding="utf-8")
+            version_file.write_text(json.dumps({"version": start}), encoding="utf-8")
             changelog_file.write_text(CHANGELOG, encoding="utf-8")
 
             env = {k: v for k, v in os.environ.items() if k != "RELEASE_CHANGELOG"}
@@ -136,7 +136,7 @@ class MainTest(unittest.TestCase):
                 mock.patch.object(bump_version, "sync_asset_versions"),
                 mock.patch.object(bump_version, "today_jst", return_value="2026-02-02"),
                 mock.patch.dict(os.environ, env, clear=True),
-                mock.patch.object(sys, "argv", ["bump_version.py", "patch"]),
+                mock.patch.object(sys, "argv", ["bump_version.py", arg]),
                 redirect_stdout(io.StringIO()),
             ):
                 bump_version.main()
@@ -164,6 +164,34 @@ class MainTest(unittest.TestCase):
             version, content = self._run(None)
         self.assertEqual(version, "1.0.1")
         self.assertNotIn("version: '1.0.1'", content)
+
+
+class ExplicitVersionTest(unittest.TestCase):
+    """確定版番号（X.Y.Z）を引数に取る形（#342）。共通の公開準備が欠番を飛ばした版をそのまま適用する。"""
+
+    def test_explicit_version_skips_ahead_of_patch(self):
+        version, content = MainTest()._run("- 直した", arg="1.0.3")
+        self.assertEqual(version, "1.0.3")
+        self.assertIn("const APP_VERSION = '1.0.3'", content)
+        self.assertIn("version: '1.0.3'", content)
+
+    def test_same_version_is_idempotent(self):
+        version, content = MainTest()._run(None, arg="1.0.0")
+        self.assertEqual(version, "1.0.0")
+        self.assertNotIn("1.0.1", content)
+
+    def test_rerun_does_not_double_bump(self):
+        v1, _ = MainTest()._run("- 直した", arg="1.0.3", start="1.0.3")
+        self.assertEqual(v1, "1.0.3")
+
+    def test_lower_or_malformed_version_is_rejected(self):
+        for arg in ("0.9.9", "1.0", "v1.0.1", "latest", ""):
+            with self.assertRaises(SystemExit, msg=arg), redirect_stdout(io.StringIO()):
+                MainTest()._run(None, arg=arg)
+
+    def test_kind_arguments_still_work(self):
+        self.assertEqual(MainTest()._run(None, arg="minor")[0], "1.1.0")
+        self.assertEqual(MainTest()._run(None, arg="major")[0], "2.0.0")
 
 
 class ShippedChangelogTest(unittest.TestCase):
