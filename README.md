@@ -77,7 +77,7 @@ DB のテーブルは**アプリの起動時には作られません**（本番�
 .venv/bin/python backend/migrate_db.py   # 接続先は .env.local から読む
 ```
 
-モデル（`backend/database.py`）を変更したときも、同じコマンドで反映します。本番では `.github/workflows/deploy.yml` がデプロイのたびにマイグレーション専用ユーザーで実行します。
+モデル（`backend/database.py`）を変更したときも、同じコマンドで反映します。本番ではデプロイのたびに `deploy/gate-install.sh`（VPS の app-deploy-gate が実行する）がマイグレーション専用ユーザーで実行します。
 
 ログインは他アプリと共通の Supabase Auth（Google ログイン）です。Supabase プロジェクトは開発用と本番用で分けます。開発用の `project-url` / `publishable-key` は 1Password を経由せず `.env.local` へ直接書き（`SUPABASE_URL` / `SUPABASE_PUBLISHABLE_KEY`）、開発用 Supabase の **Redirect URLs** に `https://<TUNNEL_HOSTNAME>/auth/callback` を登録します。`service_role` キーはフロントエンドにもリポジトリにも置きません。
 
@@ -178,12 +178,14 @@ URL を直接叩くとその別名を経由しません。`source` も `App` フ
 
 ## デプロイ
 
-`main` ブランチへの push（または Actions から手動実行）で GitHub Actions が VPS へ rsync デプロイします（[設計ガイド](https://github.com/m-guchi/docs/blob/main/README.md) 参照）。
+`main` ブランチへの push（または Actions から手動実行）で GitHub Actions が VPS の app-deploy-gate へデプロイします（[設計ガイド](https://github.com/m-guchi/docs/blob/main/README.md) 参照）。
+アプリ専用の SSH 鍵で `upload`（配布物の tar.gz）・`env`（`.env` の値）・`deploy` の3語だけを送り、venv・マイグレーション・
+user systemd の再起動は配布物の `deploy/gate-install.sh`、稼働版の照合（`/api/app-version` の `sha`）は gate が行います（#352）。
 
 ```
 main へ push / workflow_dispatch
     ├─ tag      … version.json から v{version} タグを作成
-    ├─ deploy   … rsync → systemd restart
+    ├─ deploy   … app-deploy-gate（upload → env → deploy。deploy/gate-install.sh → 稼働版の照合）
     ├─ release  … GitHub Release を自動生成
     ├─ notify   … デプロイ結果を Signaly へ通知
     └─ notify-release … リリース結果を Signaly へ通知

@@ -42,7 +42,7 @@ if [[ ! -f "$TARGET_DIR/backend/channels.json" ]]; then
 fi
 
 # テーブルの作成・列の追加はここでは行わない。DDL はマイグレーション専用ユーザーでしか
-# 実行できず、その資格情報は deploy.yml（backend/migrate_db.py の実行）しか持たない（#183）。
+# 実行できず、その資格情報はデプロイ（deploy/gate-install.sh の backend/migrate_db.py の実行）しか持たない（#183・#352）。
 echo "==> MySQL データベースを作成（存在しない場合のみ）"
 echo "  !! DATABASE_URL 環境変数が設定されていることを確認してください"
 mysql -u root -e "CREATE DATABASE IF NOT EXISTS app_signaly CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null || \

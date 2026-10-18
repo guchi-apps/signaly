@@ -43,7 +43,30 @@ def load_env_file(path: Path) -> None:
         key = key.strip()
         if not key or key in os.environ:
             continue
-        os.environ[key] = value.strip()
+        os.environ[key] = _unquote(value.strip())
+
+
+def _unquote(value: str) -> str:
+    """VPS の app-deploy-gate が書く `KEY="VALUE"` の形を元の値へ戻す（#352）。
+
+    gate は値をダブルクォートで囲み、`\\` と `"` をバックスラッシュでエスケープし、改行は
+    `\\n` にして書く。systemd の `EnvironmentFile` は同じ形を読めるが、このパーサが囲みを
+    外さないと `DB_NAME` が `"app_signaly"`（引用符込み）になり接続先を取り違える。
+    クォートの無い旧形式の行（ローカルの `.env.local` を含む）はそのまま返す。
+    """
+    if len(value) < 2 or value[0] != '"' or value[-1] != '"':
+        return value
+    body, out, i = value[1:-1], [], 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            out.append({"n": "\n", "\\": "\\", '"': '"'}.get(nxt, "\\" + nxt))
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _grant_hint(db_name: str, using_admin: bool) -> str:
