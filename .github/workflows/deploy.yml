@@ -120,7 +120,18 @@ jobs:
           VAPID_PUBLIC_KEY:     ${{ env.VAPID_PUBLIC_KEY }}
           VAPID_PRIVATE_KEY:    ${{ env.VAPID_PRIVATE_KEY }}
           VAPID_SUBJECT:        ${{ env.VAPID_SUBJECT }}
+          # 稼働している版の照合に使う（#348）。.env へ書き、再起動後に
+          # `/api/app-version` が返す `sha` と一致するまでデプロイを成功にしない。
+          # issue-deck の新方式リリースは、これを稼働確認の証拠として扱う。
+          APP_COMMIT_SHA:       ${{ github.sha }}
         run: |
+          # 照合の前提が崩れていないかを先に確かめる（空や想定外の形のまま進むと、
+          # 照合が「空文字どうしの一致」のような意味の無い比較になる）。
+          if ! printf '%s' "$APP_COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::APP_COMMIT_SHA が40桁のコミットSHAではありません: '${APP_COMMIT_SHA}'"
+            exit 1
+          fi
+
           rsync -az --delete \
             -e "ssh -p ${SSH_PORT}" \
             --exclude='.git' \
@@ -147,6 +158,7 @@ jobs:
           DB_PORT_B64=$(b64 "$DB_PORT")
           DB_ADMIN_USER_B64=$(b64 "$DB_ADMIN_USER")
           DB_ADMIN_PASSWORD_B64=$(b64 "$DB_ADMIN_PASSWORD")
+          APP_COMMIT_SHA_B64=$(b64 "$APP_COMMIT_SHA")
 
           ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" bash -s << EOF
             set -e
@@ -198,6 +210,7 @@ jobs:
             sync_env_var DB_PASSWORD          '${DB_PASSWORD_B64}'
             sync_env_var DB_HOST              '${DB_HOST_B64}'
             sync_env_var DB_PORT              '${DB_PORT_B64}'
+            sync_env_var APP_COMMIT_SHA       '${APP_COMMIT_SHA_B64}'
 
             # Supabase Auth へ移行して使わなくなった値（guchi-apps/signaly#110）。
             # sync_env_var は書き込む鍵しか触らないため、明示的に消さないと
@@ -218,6 +231,31 @@ jobs:
             bash deploy/restart-service.sh "${TARGET_DIR}"
 
             bash deploy/health-check.sh
+
+            # 稼働している版がこのデプロイのコミットと一致するまで成功にしない（#348）。
+            # health-check.sh が見ている / は旧版が動いたままでも 200 を返すため、
+            # それだけでは新しい版へ入れ替わったことを確かめられない。
+            # 一致しないまま時間切れなら exit 1 でデプロイを失敗にする。
+            echo "Verifying running version... (expected sha=${APP_COMMIT_SHA})"
+            verified=0
+            running_sha=""
+            for _ in \$(seq 1 30); do
+              body="\$(curl -fsS -H 'Cache-Control: no-cache' http://127.0.0.1:8002/api/app-version 2>/dev/null || true)"
+              running_sha="\$(printf '%s' "\$body" | .venv/bin/python -c 'import json,sys; v=json.load(sys.stdin).get("sha"); print(v if isinstance(v,str) else "")' 2>/dev/null || true)"
+              if [ "\$running_sha" = "${APP_COMMIT_SHA}" ]; then
+                verified=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "\$verified" != 1 ]; then
+              echo "Version check failed after 60s: /api/app-version reported sha='\${running_sha}', expected ${APP_COMMIT_SHA}." >&2
+              export XDG_RUNTIME_DIR="\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}"
+              systemctl --user status signaly --no-pager || true
+              journalctl --user -u signaly -n 50 --no-pager || true
+              exit 1
+            fi
+            echo "Deployment verified. (sha=${APP_COMMIT_SHA})"
           EOF
 
   release:
