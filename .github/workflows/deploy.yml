@@ -69,7 +69,6 @@ jobs:
       DB_USER: ${{ secrets.SHARED_DB_USER }}
       HOST: ${{ secrets.SERVER_HOST }}
       SSH_PORT: ${{ secrets.SERVER_SSH_PORT }}
-      SSH_PRIVATE_KEY: ${{ secrets.SERVER_SSH_PRIVATE_KEY }}
       ISSUE_DECK_URL: ${{ vars.APP_BASE_URL }}
       SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
       SUPABASE_URL: ${{ vars.SUPABASE_PROJECT_URL }}
@@ -81,6 +80,7 @@ jobs:
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       SIGNALY_WEBHOOK_URL: ${{ secrets.SIGNALY_WEBHOOK_URL }}
       TARGET_DIR: ${{ secrets.TARGET_DIR }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
       VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
       VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
       VAPID_SUBJECT: ${{ secrets.VAPID_SUBJECT }}
@@ -98,165 +98,95 @@ jobs:
       - name: known_hosts を追加
         run: ssh-keyscan -p "${SSH_PORT}" -H "${HOST}" >> ~/.ssh/known_hosts
 
-      - name: VPS にデプロイ
-        env:
-          TARGET_DIR:           ${{ env.TARGET_DIR }}
-          DB_NAME:              ${{ env.DB_NAME }}
-          DB_USER:              ${{ env.DB_USER }}
-          DB_PASSWORD:          ${{ env.DB_PASSWORD }}
-          DB_HOST:              ${{ env.DB_HOST }}
-          DB_PORT:              ${{ env.DB_PORT }}
-          # マイグレーション専用ユーザー（DDL権限あり）。アプリ用ユーザーは CRUD 権限しか
-          # 持たず、テーブルを1つ足しただけで起動が CREATE command denied で落ちる（#183）。
-          DB_ADMIN_USER:        ${{ env.DB_ADMIN_USER }}
-          DB_ADMIN_PASSWORD:    ${{ env.DB_ADMIN_PASSWORD }}
-          SUPABASE_URL:         ${{ env.SUPABASE_URL }}
-          SUPABASE_PUBLISHABLE_KEY: ${{ env.SUPABASE_PUBLISHABLE_KEY }}
-          APP_URL:              ${{ env.APP_URL }}
-          ISSUE_DECK_URL:       ${{ env.ISSUE_DECK_URL }}
-          SHARED_TOKEN_API_SECRET: ${{ env.SHARED_TOKEN_API_SECRET }}
-          SECRET_KEY:           ${{ env.SECRET_KEY }}
-          SIGNALY_LOGIN_WEBHOOK_URL: ${{ env.SIGNALY_LOGIN_WEBHOOK_URL }}
-          VAPID_PUBLIC_KEY:     ${{ env.VAPID_PUBLIC_KEY }}
-          VAPID_PRIVATE_KEY:    ${{ env.VAPID_PRIVATE_KEY }}
-          VAPID_SUBJECT:        ${{ env.VAPID_SUBJECT }}
-          # 稼働している版の照合に使う（#348）。.env へ書き、再起動後に
-          # `/api/app-version` が返す `sha` と一致するまでデプロイを成功にしない。
-          # issue-deck の新方式リリースは、これを稼働確認の証拠として扱う。
-          APP_COMMIT_SHA:       ${{ github.sha }}
+      # 配布物を作る。従来の rsync の除外（.git・.venv・.env・backend/channels.json）に加え、
+      # 実行時に VPS 上で作られるもの（backend/vapid_private.pem・backend/data/）も入れない。
+      # gate は配布物に入っていなかったファイルを消さないので、これらはデプロイをまたいで残る（#352）。
+      - name: 配布物を作成
         run: |
-          # 照合の前提が崩れていないかを先に確かめる（空や想定外の形のまま進むと、
-          # 照合が「空文字どうしの一致」のような意味の無い比較になる）。
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/deploy.tar.gz"
+          tar -czf "$archive" \
+            --exclude='.git' \
+            --exclude='.venv' \
+            --exclude='.env' \
+            --exclude='.env.local' \
+            --exclude='backend/channels.json' \
+            --exclude='backend/vapid_private.pem' \
+            --exclude='backend/data' \
+            --exclude='__pycache__' \
+            backend frontend deploy scripts version.json channels.example.json
+          # gate はシンボリックリンク・特殊ファイルを含む配布物を拒否する。先に分かる形で止める。
+          if tar -tvzf "$archive" | grep -Ev '^[-d]' | grep -q .; then
+            echo "::error::配布物に通常のファイル・ディレクトリ以外が含まれています"
+            tar -tvzf "$archive" | grep -Ev '^[-d]'
+            exit 1
+          fi
+          echo "DEPLOY_ARCHIVE=${archive}" >> "$GITHUB_ENV"
+
+      # **VPS の app-deploy-gate（/usr/local/sbin/app-deploy-gate。guchi-apps/vps#275・#305）へ渡す**（#352）。
+      # 鍵はこのアプリ専用で、VPS の authorized_keys の command= が gate のアプリ名（signaly。置き場の
+      # /home/github-user/apps/signaly に一致する）を固定する。任意のシェルコマンドは実行できず、
+      # upload・env・deploy の3語だけが通る。旧配布物の削除・展開・.env の更新・稼働版の照合は gate、
+      # VAPID 秘密鍵の書き出し・不要なキーの削除・venv・マイグレーション・user systemd の再起動・
+      # ヘルスチェックは配布物の deploy/gate-install.sh が行う。
+      - name: Upload archive
+        run: ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" upload < "${DEPLOY_ARCHIVE}"
+
+      - name: Send environment variables
+        env:
+          # 稼働している版の照合に使う（#348）。gate が .env の APP_COMMIT_SHA と
+          # 127.0.0.1:8002/api/app-version の sha の一致を最大60秒待ち、不一致ならデプロイを失敗にする
+          # （guchi-apps/vps#298）。issue-deck の新方式リリースは、これを稼働確認の証拠として扱う。
+          APP_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
           if ! printf '%s' "$APP_COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
             echo "::error::APP_COMMIT_SHA が40桁のコミットSHAではありません: '${APP_COMMIT_SHA}'"
             exit 1
           fi
+          # VAPID 秘密鍵は PEM（複数行）のため gate の env（1行1変数）では送れない。base64 の1行で送り、
+          # deploy/gate-install.sh が backend/vapid_private.pem へ戻して .env からは消す（従来の
+          # write_vapid_private_key と同じ結果）。
+          VAPID_PRIVATE_KEY_B64="$(printf '%s' "$VAPID_PRIVATE_KEY" | base64 -w 0)"
+          # マイグレーション専用ユーザー（DDL 権限あり）。.env へは書かず（gate が MIGRATE_DATABASE_URL を
+          # .env へ書かない）、gate-install.sh が migrate_db.py の1コマンドの間だけ DB_ADMIN_USER /
+          # DB_ADMIN_PASSWORD として渡す（#183）。未設定ならアプリ用ユーザーへフォールバックする（従来どおり）。
+          urlenc() { URLENC_VALUE="$1" python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["URLENC_VALUE"], safe=""))'; }
+          MIGRATE_DATABASE_URL=""
+          if [ -n "${DB_ADMIN_USER:-}" ]; then
+            MIGRATE_DATABASE_URL="mysql://$(urlenc "$DB_ADMIN_USER"):$(urlenc "${DB_ADMIN_PASSWORD:-}")@${DB_HOST}:${DB_PORT}/$(urlenc "$DB_NAME")"
+          fi
+          for name in SUPABASE_URL SUPABASE_PUBLISHABLE_KEY APP_URL ISSUE_DECK_URL SHARED_TOKEN_API_SECRET \
+            SECRET_KEY SIGNALY_LOGIN_WEBHOOK_URL VAPID_PUBLIC_KEY VAPID_SUBJECT DB_NAME DB_USER DB_PASSWORD \
+            DB_HOST DB_PORT MIGRATE_DATABASE_URL VAPID_PRIVATE_KEY_B64; do
+            case "${!name}" in
+              *$'\n'*|*$'\r'*) echo "::error::${name} が改行を含むため gate へ送れません"; exit 1 ;;
+            esac
+          done
+          # 待受ポートはシークレットではなく設定値として平文で持つ（signaly.service.template の ExecStart と同じ 8002）。
+          {
+            printf '%s\n' "PORT=8002"
+            printf '%s\n' "APP_COMMIT_SHA=${APP_COMMIT_SHA}"
+            printf '%s\n' "SUPABASE_URL=${SUPABASE_URL}"
+            printf '%s\n' "SUPABASE_PUBLISHABLE_KEY=${SUPABASE_PUBLISHABLE_KEY}"
+            printf '%s\n' "APP_URL=${APP_URL}"
+            printf '%s\n' "ISSUE_DECK_URL=${ISSUE_DECK_URL}"
+            printf '%s\n' "SHARED_TOKEN_API_SECRET=${SHARED_TOKEN_API_SECRET}"
+            printf '%s\n' "SECRET_KEY=${SECRET_KEY}"
+            printf '%s\n' "SIGNALY_LOGIN_WEBHOOK_URL=${SIGNALY_LOGIN_WEBHOOK_URL}"
+            printf '%s\n' "VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY}"
+            printf '%s\n' "VAPID_PRIVATE_KEY_B64=${VAPID_PRIVATE_KEY_B64}"
+            printf '%s\n' "VAPID_SUBJECT=${VAPID_SUBJECT}"
+            printf '%s\n' "DB_NAME=${DB_NAME}"
+            printf '%s\n' "DB_USER=${DB_USER}"
+            printf '%s\n' "DB_PASSWORD=${DB_PASSWORD}"
+            printf '%s\n' "DB_HOST=${DB_HOST}"
+            printf '%s\n' "DB_PORT=${DB_PORT}"
+            printf '%s\n' "MIGRATE_DATABASE_URL=${MIGRATE_DATABASE_URL}"
+          } | ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" env
 
-          rsync -az --delete \
-            -e "ssh -p ${SSH_PORT}" \
-            --exclude='.git' \
-            --exclude='.venv' \
-            --exclude='.env' \
-            --exclude='backend/channels.json' \
-            ./ "${USERNAME}@${HOST}:${TARGET_DIR}/"
-
-          b64() { printf '%s' "$1" | base64 -w 0; }
-          SUPABASE_URL_B64=$(b64 "$SUPABASE_URL")
-          SUPABASE_PUBLISHABLE_KEY_B64=$(b64 "$SUPABASE_PUBLISHABLE_KEY")
-          APP_URL_B64=$(b64 "$APP_URL")
-          ISSUE_DECK_URL_B64=$(b64 "$ISSUE_DECK_URL")
-          SHARED_TOKEN_API_SECRET_B64=$(b64 "$SHARED_TOKEN_API_SECRET")
-          SECRET_KEY_B64=$(b64 "$SECRET_KEY")
-          SIGNALY_LOGIN_WEBHOOK_URL_B64=$(b64 "$SIGNALY_LOGIN_WEBHOOK_URL")
-          VAPID_PUBLIC_KEY_B64=$(b64 "$VAPID_PUBLIC_KEY")
-          VAPID_PRIVATE_KEY_B64=$(b64 "$VAPID_PRIVATE_KEY")
-          VAPID_SUBJECT_B64=$(b64 "$VAPID_SUBJECT")
-          DB_NAME_B64=$(b64 "$DB_NAME")
-          DB_USER_B64=$(b64 "$DB_USER")
-          DB_PASSWORD_B64=$(b64 "$DB_PASSWORD")
-          DB_HOST_B64=$(b64 "$DB_HOST")
-          DB_PORT_B64=$(b64 "$DB_PORT")
-          DB_ADMIN_USER_B64=$(b64 "$DB_ADMIN_USER")
-          DB_ADMIN_PASSWORD_B64=$(b64 "$DB_ADMIN_PASSWORD")
-          APP_COMMIT_SHA_B64=$(b64 "$APP_COMMIT_SHA")
-
-          ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" bash -s << EOF
-            set -e
-            cd "${TARGET_DIR}"
-
-            sync_env_var() {
-              key="\$1"
-              value="\$(printf '%s' "\$2" | base64 -d)"
-              touch .env
-              if grep -q "^\${key}=" .env; then
-                grep -v "^\${key}=" .env > .env.tmp && mv .env.tmp .env
-              fi
-              printf '%s=%s\n' "\$key" "\$value" >> .env
-            }
-
-            remove_env_var() {
-              key="\$1"
-              touch .env
-              if grep -q "^\${key}=" .env; then
-                grep -v "^\${key}=" .env > .env.tmp && mv .env.tmp .env
-              fi
-            }
-
-            write_vapid_private_key() {
-              printf '%s' "\$1" | base64 -d > backend/vapid_private.pem
-              chmod 600 backend/vapid_private.pem
-              touch .env
-              if grep -q '^VAPID_PRIVATE_KEY=' .env; then
-                grep -v '^VAPID_PRIVATE_KEY=' .env > .env.tmp && mv .env.tmp .env
-              fi
-              if grep -q '^VAPID_PRIVATE_KEY_FILE=' .env; then
-                grep -v '^VAPID_PRIVATE_KEY_FILE=' .env > .env.tmp && mv .env.tmp .env
-              fi
-              printf '%s=%s\n' 'VAPID_PRIVATE_KEY_FILE' 'vapid_private.pem' >> .env
-            }
-
-            sync_env_var SUPABASE_URL             '${SUPABASE_URL_B64}'
-            sync_env_var SUPABASE_PUBLISHABLE_KEY '${SUPABASE_PUBLISHABLE_KEY_B64}'
-            sync_env_var APP_URL              '${APP_URL_B64}'
-            sync_env_var ISSUE_DECK_URL       '${ISSUE_DECK_URL_B64}'
-            sync_env_var SHARED_TOKEN_API_SECRET '${SHARED_TOKEN_API_SECRET_B64}'
-            sync_env_var SECRET_KEY           '${SECRET_KEY_B64}'
-            sync_env_var SIGNALY_LOGIN_WEBHOOK_URL '${SIGNALY_LOGIN_WEBHOOK_URL_B64}'
-            sync_env_var VAPID_PUBLIC_KEY     '${VAPID_PUBLIC_KEY_B64}'
-            write_vapid_private_key           '${VAPID_PRIVATE_KEY_B64}'
-            sync_env_var VAPID_SUBJECT        '${VAPID_SUBJECT_B64}'
-            sync_env_var DB_NAME              '${DB_NAME_B64}'
-            sync_env_var DB_USER              '${DB_USER_B64}'
-            sync_env_var DB_PASSWORD          '${DB_PASSWORD_B64}'
-            sync_env_var DB_HOST              '${DB_HOST_B64}'
-            sync_env_var DB_PORT              '${DB_PORT_B64}'
-            sync_env_var APP_COMMIT_SHA       '${APP_COMMIT_SHA_B64}'
-
-            # Supabase Auth へ移行して使わなくなった値（guchi-apps/signaly#110）。
-            # sync_env_var は書き込む鍵しか触らないため、明示的に消さないと
-            # 本番の .env に旧 Google OAuth の資格情報が残り続ける。
-            remove_env_var GOOGLE_CLIENT_ID
-            remove_env_var GOOGLE_CLIENT_SECRET
-            remove_env_var GOOGLE_REDIRECT_URI
-
-            bash deploy/ensure_venv.sh "${TARGET_DIR}"
-
-            # スキーマの反映はここだけで行う。DDL 権限はマイグレーション専用ユーザー
-            # だけが持つため、この1コマンドの間だけ環境変数で渡す。**.env へは書かない**
-            # ——書くと常時稼働する uvicorn まで DDL 権限を持つ（#183）。
-            DB_ADMIN_USER="\$(printf '%s' '${DB_ADMIN_USER_B64}' | base64 -d)" \
-            DB_ADMIN_PASSWORD="\$(printf '%s' '${DB_ADMIN_PASSWORD_B64}' | base64 -d)" \
-            .venv/bin/python backend/migrate_db.py
-
-            bash deploy/restart-service.sh "${TARGET_DIR}"
-
-            bash deploy/health-check.sh
-
-            # 稼働している版がこのデプロイのコミットと一致するまで成功にしない（#348）。
-            # health-check.sh が見ている / は旧版が動いたままでも 200 を返すため、
-            # それだけでは新しい版へ入れ替わったことを確かめられない。
-            # 一致しないまま時間切れなら exit 1 でデプロイを失敗にする。
-            echo "Verifying running version... (expected sha=${APP_COMMIT_SHA})"
-            verified=0
-            running_sha=""
-            for _ in \$(seq 1 30); do
-              body="\$(curl -fsS -H 'Cache-Control: no-cache' http://127.0.0.1:8002/api/app-version 2>/dev/null || true)"
-              running_sha="\$(printf '%s' "\$body" | .venv/bin/python -c 'import json,sys; v=json.load(sys.stdin).get("sha"); print(v if isinstance(v,str) else "")' 2>/dev/null || true)"
-              if [ "\$running_sha" = "${APP_COMMIT_SHA}" ]; then
-                verified=1
-                break
-              fi
-              sleep 2
-            done
-            if [ "\$verified" != 1 ]; then
-              echo "Version check failed after 60s: /api/app-version reported sha='\${running_sha}', expected ${APP_COMMIT_SHA}." >&2
-              export XDG_RUNTIME_DIR="\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}"
-              systemctl --user status signaly --no-pager || true
-              journalctl --user -u signaly -n 50 --no-pager || true
-              exit 1
-            fi
-            echo "Deployment verified. (sha=${APP_COMMIT_SHA})"
-          EOF
+      - name: Deploy and restart
+        run: ssh -p "${SSH_PORT}" "${USERNAME}@${HOST}" deploy
 
   release:
     runs-on: ubuntu-latest

@@ -167,12 +167,12 @@ GitHub secret に Webhook URL として散らばっており、統合のたび�
 `.github/secrets-manifest.tsv` の該当行は `inherit` で、`scripts/sync-github-secrets.sh` は
 スキップする。**同名の repository secret を作らないこと**——repository secret は同名の
 organization secret を覆い隠すため、アプリ別チャンネルへ戻る。旧名 `LOGIN_WEBHOOK_URL` の行は
-本番の `.env` に残るが、`deploy.yml` の `sync_env_var` は書き込む鍵しか触らず、アプリはもう
+本番の `.env` に残るが、app-deploy-gate は送られた鍵しか書き換えず、アプリはもう
 読まないため害はない。
 
 **通知先の設定ミスは何も表面化しない。** URL が空でも `deploy.yml` は空値を `.env` へ書き、
 `login_notify.py` は空なら例外もログも出さずに `return` する。環境変数名を変えたときは、
-`deploy.yml`（`env:` / `envs:` / `b64` / `sync_env_var` の4か所）・`.env.example` /
+`deploy.yml`（ジョブの `env:` / `Send environment variables` の改行チェックの `for name in` / `printf` の3か所）・`.env.example` /
 `.env.local.example`・`backend/login_notify.py` を必ず揃えること。
 
 **アプリ固有の Webhook URL を共通チャンネルのURLへ差し替えるときは、送信側が
@@ -284,11 +284,13 @@ DELETE しか持たない（正は `guchi-apps/vps` の `docs/web-stack.md`）�
 通ってしまい、新規テーブルが増えた回だけ `CREATE command denied` で起動に失敗する。#183 は
 `channel_aliases`（#177で追加）で実際にこれを踏み、本番が503になった。
 
-**スキーマの反映は `backend/migrate_db.py` だけが行う。** `.github/workflows/deploy.yml` が
-`ensure_venv.sh` の後・`restart-service.sh` の前に1回実行する。DDL権限を持つのは
+**スキーマの反映は `backend/migrate_db.py` だけが行う。** デプロイのたびに `deploy/gate-install.sh`
+（VPS の app-deploy-gate が実行する。#352）が `ensure_venv.sh` の後・`restart-service.sh` の前に1回実行する。DDL権限を持つのは
 マイグレーション専用ユーザー（organizationの `SHARED_DB_MIGRATE_USER` /
 `SHARED_DB_MIGRATE_PASSWORD`）だけで、**この1コマンドの実行中だけ `DB_ADMIN_USER` /
-`DB_ADMIN_PASSWORD` として環境変数で渡す。`.env` へは書かないこと**——書くと常時稼働する
+`DB_ADMIN_PASSWORD` として環境変数で渡す。`.env` へは書かないこと**（ワークフローは
+`MIGRATE_DATABASE_URL` に組み立てて gate へ送り、gate はこれを `.env` へ書かない。`gate-install.sh` が
+URL を解析して渡す）——書くと常時稼働する
 uvicorn まで DDL 権限を持つ。未設定ならアプリ用ユーザーへフォールバックする
 （ローカル向け。本番では必ず渡る）。
 
@@ -375,7 +377,7 @@ maskable のこの安全円の外を切り落とす。v1.6.3以前の稲妻は�
 存在しないファイルを参照したまま残っていた（#132）。移行の確認はリポジトリ全体を
 `grep -rn '\.env\.tpl'` すること。
 
-本番VPSの `.env` は `deploy.yml` が書き込む。`deploy/setup.sh` は書かないため、新規にVPSを
+本番VPSの `.env` は app-deploy-gate が書き込む（`deploy.yml` が `ssh … env` で送った値。#352）。`deploy/setup.sh` は書かないため、新規にVPSを
 立てた場合は setup 後に Deploy を1回走らせる必要がある。
 
 ### デプロイ後のヘルスチェック
@@ -388,16 +390,39 @@ maskable のこの安全円の外を切り落とす。v1.6.3以前の稲妻は�
 
 **ヘルスチェックを `restart-service.sh` の末尾に入れないこと。** `deploy/setup.sh` も
 `restart-service.sh` を呼ぶが、新規VPSでは `.env` がまだ無く signaly は起動できない。末尾に
-入れると初回セットアップが必ず60秒待って落ちる。呼び出しは `deploy.yml` 側からのみ行う。
+入れると初回セットアップが必ず60秒待って落ちる。呼び出しは `deploy/gate-install.sh` からのみ行う。
 
 **`/` が 200 を返しても、新しい版へ入れ替わったとは限らない（#348）。** 旧版が動いたままでも
-`/` は 200 を返す。そのため `deploy.yml` は `health-check.sh` の後に `GET /api/app-version`
-（認証なし・`Cache-Control: no-store`）の `sha` がデプロイしたコミット（`APP_COMMIT_SHA`＝
-`github.sha`。`.env` へ書き、systemd の `EnvironmentFile` で渡る）と一致するまで待ち、60秒で
-一致しなければ失敗にする。**この照合は `deploy.yml` の中に実体として書くこと**——issue-deck の
-新方式リリースは、対象コミットの `deploy.yml` に `APP_COMMIT_SHA` と `/api/app-version` の両方が
-含まれているかで「照合付き」と判定する（`deploy/health-check.sh` の中へ移すと判定されなくなり、
-公開した候補が「稼働確認が停止（証拠未設定）」で止まる）。
+`/` は 200 を返す。そのため `GET /api/app-version`（認証なし・`Cache-Control: no-store`）の `sha` が
+デプロイしたコミット（`APP_COMMIT_SHA`＝`github.sha`）と一致するまで待ち、60秒で一致しなければ失敗にする。
+#352 からはこの照合を **app-deploy-gate が行う**（`deploy.yml` が `APP_COMMIT_SHA` を `ssh … env` で送り、
+gate が `.env` へ書いてから `deploy/gate-install.sh` の後に `127.0.0.1:8002/api/app-version` を叩く）。
+issue-deck の新方式リリースは、`deploy.yml` が `APP_COMMIT_SHA` をステップの `env:` に持ち、
+`"APP_COMMIT_SHA=…"` を `| ssh … env` へ流し、`ssh … deploy` を呼ぶ形を「gate へ委譲した照合付き」と
+判定する（issue-deck の `src/lib/deploy-version-check.ts`）。**この3点を崩さないこと**——崩すと公開した
+候補が「稼働確認が停止（証拠未設定）」で止まる。
+
+### 本番デプロイ（app-deploy-gate。#352）
+
+`deploy.yml` の `deploy` ジョブは、アプリ専用の SSH 鍵（repo secret `SSH_PRIVATE_KEY`。正は
+`op://apps/signaly/deploy-ssh-key`）で VPS の gate（`/usr/local/sbin/app-deploy-gate`。guchi-apps/vps#275・#305）へ
+`upload`（配布物の tar.gz）→ `env`（標準入力に `KEY=VALUE` を1行1変数）→ `deploy` の3語だけを送る。
+鍵は VPS の `authorized_keys` の `command=` で gate のアプリ名 `signaly`（置き場 `/home/github-user/apps/signaly`）に
+固定され、**SSH 先で任意のシェルは実行できない**。organization 共通の `SERVER_SSH_PRIVATE_KEY` はもう使わない。
+
+- gate が行う: 前回の配布物の削除・展開・`.env` の更新（`KEY="VALUE"` の形で書く）・稼働版の照合
+- `deploy/gate-install.sh`（配布物に入っており gate が `deploy` のときに実行する）が行う: VAPID 秘密鍵の書き出し・
+  旧 `GOOGLE_*` の削除・`ensure_venv.sh`・`migrate_db.py`・`restart-service.sh`・`health-check.sh`。**SSH 先で
+  足したい手順はここへ書く**（ワークフロー側には書けない）
+- **改行を含む値は gate へ送れない。** VAPID 秘密鍵（PEM）は `VAPID_PRIVATE_KEY_B64` として base64 の1行で送り、
+  `gate-install.sh` が `backend/vapid_private.pem` へ戻して `.env` からは消し、`VAPID_PRIVATE_KEY_FILE` を書く
+- **`.env` の値は `KEY="VALUE"`（`\` と `"` をエスケープ）で書かれる。** systemd の `EnvironmentFile` はこの形を
+  読める。`.env` を自前で読む `migrate_db.load_env_file()` は囲みを外す（外さないと `DB_NAME` が引用符込みになる）
+- 配布物（`backend frontend deploy scripts version.json channels.example.json`）に、実行時のデータ
+  （`.venv`・`.env`・`backend/channels.json`・`backend/vapid_private.pem`・`backend/data/`）を入れないこと。
+  gate は配布物に入っていなかったファイルを消さないので、入れなければデプロイをまたいで残る。
+  逆に配布物に入れると、デプロイのたびに配布物の内容で上書きされる（実行中に書き換えた内容が失われる）
+- `TARGET_DIR` は gate が置き場を固定するため使わなくなった（マニフェストには移行を確かめるまで残す）
 
 ## マルチエージェント運用（GitHub Actions 無人実行）
 
