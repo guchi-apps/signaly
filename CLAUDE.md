@@ -390,6 +390,15 @@ maskable のこの安全円の外を切り落とす。v1.6.3以前の稲妻は�
 `restart-service.sh` を呼ぶが、新規VPSでは `.env` がまだ無く signaly は起動できない。末尾に
 入れると初回セットアップが必ず60秒待って落ちる。呼び出しは `deploy.yml` 側からのみ行う。
 
+**`/` が 200 を返しても、新しい版へ入れ替わったとは限らない（#348）。** 旧版が動いたままでも
+`/` は 200 を返す。そのため `deploy.yml` は `health-check.sh` の後に `GET /api/app-version`
+（認証なし・`Cache-Control: no-store`）の `sha` がデプロイしたコミット（`APP_COMMIT_SHA`＝
+`github.sha`。`.env` へ書き、systemd の `EnvironmentFile` で渡る）と一致するまで待ち、60秒で
+一致しなければ失敗にする。**この照合は `deploy.yml` の中に実体として書くこと**——issue-deck の
+新方式リリースは、対象コミットの `deploy.yml` に `APP_COMMIT_SHA` と `/api/app-version` の両方が
+含まれているかで「照合付き」と判定する（`deploy/health-check.sh` の中へ移すと判定されなくなり、
+公開した候補が「稼働確認が停止（証拠未設定）」で止まる）。
+
 ## マルチエージェント運用（GitHub Actions 無人実行）
 
 `@claude` コメントを起点に、計画提示〜実装〜develop向けPR作成までを GitHub Actions 上で無人実行する。
