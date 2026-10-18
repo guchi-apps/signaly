@@ -761,13 +761,13 @@ async def auth_config():
 async def app_version(response: Response):
     """稼働している版を返す（#348）。
 
-    デプロイ（`.github/workflows/deploy.yml`）が再起動後にこの `sha` と
+    デプロイ（VPS の app-deploy-gate。#352）が再起動後にこの `sha` と
     `APP_COMMIT_SHA`（デプロイしたコミット）を突き合わせ、一致するまで成功にしない。
     issue-deck の新方式リリースは、これを稼働確認の証拠として扱う。
 
     版とコミットSHAは公開されても害の無い値なので認証を掛けない（照合する
     デプロイのヘルスチェックはトークンを持たない）。古い応答で照合を誤らないよう
-    キャッシュさせない。`APP_COMMIT_SHA` は deploy.yml が `.env` へ書き、
+    キャッシュさせない。`APP_COMMIT_SHA` は deploy.yml が gate へ送り gate が `.env` へ書き、
     systemd の EnvironmentFile 経由で渡る。未設定（ローカル等）なら `null`。
     """
     response.headers["Cache-Control"] = "no-store"

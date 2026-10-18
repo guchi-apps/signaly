@@ -116,6 +116,26 @@ class LoadEnvFileTest(unittest.TestCase):
                 self.assertEqual(os.environ["ALLOWED_EMAILS"], "a@example.com, b@example.com")
                 self.assertEqual(os.environ["SECRET_KEY"], "ab=cd==")
 
+    def test_reads_values_quoted_by_app_deploy_gate(self):
+        """VPS の app-deploy-gate が書く KEY="VALUE" の形を、引用符を外して読む（#352）。"""
+        with TemporaryDirectory() as tmp:
+            body = (
+                'DB_NAME="app_signaly"\n'
+                'DB_PASSWORD="p\\\\a\\"ss=w"\n'
+                'DB_HOST="127.0.0.1"\n'
+                "DB_PORT=3306\n"
+            )
+            path = self._write(tmp, body)
+            keys = ("DB_NAME", "DB_PASSWORD", "DB_HOST", "DB_PORT")
+            with patch.dict(os.environ, {}, clear=False):
+                for key in keys:
+                    os.environ.pop(key, None)
+                migrate_db.load_env_file(path)
+                self.assertEqual(os.environ["DB_NAME"], "app_signaly")
+                self.assertEqual(os.environ["DB_PASSWORD"], 'p\\a"ss=w')
+                self.assertEqual(os.environ["DB_HOST"], "127.0.0.1")
+                self.assertEqual(os.environ["DB_PORT"], "3306")
+
     def test_missing_file_is_not_an_error(self):
         with TemporaryDirectory() as tmp:
             migrate_db.load_env_file(Path(tmp) / "does-not-exist")
