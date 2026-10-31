@@ -20,6 +20,9 @@
 # 「送信元が残っているリポジトリ」と「未確認のリポジトリ」がどちらも 0 になったら、コード上の送信元は
 # 残っていない。未確認は origin の既定ブランチを確定できず調べていないもの（0 に混ぜない。
 # `git fetch origin` や `git remote set-head origin -a` で既定を確定してから再実行する）。
+# origin/HEAD が無い／壊れているときは、追跡ブランチが develop・main・master・trunk のうちちょうど1本の
+# 場合だけそれを既定とみなす。複数あるとき（古い develop と実際の既定 main など）や、それ以外の名前
+# （feature ブランチ1本だけ等）は推測せず未確認にする。
 # 1Password・GitHub secrets・VPS/サブPCの .env・~/.pm2/dump.pm2 と Discord への実到達は
 # 別途確認する（docs/decommission.md）。
 set -euo pipefail
@@ -70,9 +73,13 @@ for dir in "$root"/*/; do
       head_ref=""
     fi
     if [ -z "$head_ref" ]; then
-      for b in develop main master trunk; do
-        git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null && { head_ref="origin/$b"; break; }
-      done
+      # 既定ブランチを名前の存在だけで推測しない。実際の既定が main で古い develop が残る構成などで、
+      # 別のブランチだけを見て 0 件にしてしまう。追跡ブランチが **ちょうど1本** で、それが
+      # develop / main / master / trunk のいずれかのときだけ既定とみなす（他の場合は未確認）。
+      mapfile -t tracked < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -vxE 'origin|origin/HEAD' || true)
+      if [ "${#tracked[@]}" = 1 ]; then
+        case "${tracked[0]}" in origin/develop|origin/main|origin/master|origin/trunk) head_ref="${tracked[0]}" ;; esac
+      fi
     fi
     refname[$canon]="$head_ref"
     if [ -n "$head_ref" ]; then
@@ -127,7 +134,7 @@ for canon in "${order[@]}"; do
   elif [ -z "$ref" ]; then
     # 既定ブランチを確定できないリポジトリは「0件」に混ぜない。未確認として数え、停止ゲートに含める。
     unresolved=$((unresolved + 1))
-    echo "== $canon [未確認: origin の既定ブランチを確定できず調べられない]"
+    echo "== $canon [未確認: origin の既定ブランチを確定できない、または検索に失敗して調べられない]"
   fi
   [ -n "$diffs" ] && printf '%s' "$diffs"
 done
