@@ -25,6 +25,10 @@
 # （feature ブランチ1本だけ等）は推測せず未確認にする。
 # 1Password・GitHub secrets・VPS/サブPCの .env・~/.pm2/dump.pm2 と Discord への実到達は
 # 別途確認する（docs/decommission.md）。
+#
+# macOS 標準の Bash 3.2 でも動くように書く（#372）。連想配列（declare -A）・mapfile・readarray・
+# BSD sed で効かない \t や `t;` を使わない。リポジトリごとの状態は order と同じ添字の配列に持つ。
+# backend/test_inventory_bash32_compat.py が禁止構文の混入を固定している。
 set -euo pipefail
 
 fetch=0
@@ -46,8 +50,22 @@ classify() {
   echo 経路
 }
 
-declare -A seen_repo checkouts hits_ref refname
+# order[i] のリポジトリの状態を refname[i]・hits_ref[i]・checkouts[i] に持つ（Bash 3.2 に連想配列は無い）。
 order=()
+refname=()
+hits_ref=()
+checkouts=()
+
+# order から canon の添字を idx に入れる。無ければ idx を空にする
+find_idx() {
+  local i=0 c
+  idx=""
+  for c in ${order[@]+"${order[@]}"}; do
+    if [ "$c" = "$1" ]; then idx="$i"; return 0; fi
+    i=$((i + 1))
+  done
+  return 0
+}
 
 for dir in "$root"/*/; do
   name="$(basename "$dir")"
@@ -63,9 +81,13 @@ for dir in "$root"/*/; do
   # Signaly 自身（別名 checkout を含む）は対象外
   [ "$canon" = "guchi-apps/signaly" ] && continue
 
-  if [ -z "${seen_repo[$canon]:-}" ]; then
-    seen_repo[$canon]=1
+  find_idx "$canon"
+  if [ -z "$idx" ]; then
+    idx="${#order[@]}"
     order+=("$canon")
+    refname+=("")
+    hits_ref+=("")
+    checkouts+=("")
     [ "$fetch" = 1 ] && git -C "$dir" fetch --quiet origin 2>/dev/null || true
     head_ref="$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     # origin/HEAD が参照先の無い壊れた参照（set-head・ブランチ削除・prune の後）のときは使わず、未確定として扱う
@@ -76,39 +98,41 @@ for dir in "$root"/*/; do
       # 既定ブランチを名前の存在だけで推測しない。実際の既定が main で古い develop が残る構成などで、
       # 別のブランチだけを見て 0 件にしてしまう。追跡ブランチが **ちょうど1本** で、それが
       # develop / main / master / trunk のいずれかのときだけ既定とみなす（他の場合は未確認）。
-      mapfile -t tracked < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -vxE 'origin|origin/HEAD' || true)
-      if [ "${#tracked[@]}" = 1 ]; then
-        case "${tracked[0]}" in origin/develop|origin/main|origin/master|origin/trunk) head_ref="${tracked[0]}" ;; esac
+      tracked="$(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -vxE 'origin|origin/HEAD' || true)"
+      if [ -n "$tracked" ] && [ "$(printf '%s\n' "$tracked" | wc -l | tr -d ' ')" = 1 ]; then
+        case "$tracked" in origin/develop|origin/main|origin/master|origin/trunk) head_ref="$tracked" ;; esac
       fi
     fi
-    refname[$canon]="$head_ref"
+    refname[$idx]="$head_ref"
     if [ -n "$head_ref" ]; then
       # git grep の終了コード 1 はヒット無し。それ以外（2 以上）は検索自体の失敗なので 0 件に混ぜず未確認にする
       grep_out="$(git -C "$dir" grep -IlE "$pattern" "$head_ref" 2>/dev/null)" && grep_rc=0 || grep_rc=$?
       if [ "$grep_rc" -gt 1 ]; then
-        refname[$canon]=""
-        hits_ref[$canon]=""
+        refname[$idx]=""
+        hits_ref[$idx]=""
       else
-        hits_ref[$canon]="$(printf '%s' "$grep_out" | sed "s#^${head_ref}:##")"
+        hits_ref[$idx]="$(printf '%s' "$grep_out" | sed "s#^${head_ref}:##")"
       fi
     else
-      hits_ref[$canon]=""
+      hits_ref[$idx]=""
     fi
   fi
 
   # この checkout の作業ツリー側のヒット（ref 側との差を出すため）
   work="$(git -C "$dir" grep -IlE "$pattern" 2>/dev/null || true)"
   branch="$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || echo '(detached)')"
-  diff_only="$(comm -3 <(printf '%s\n' "${hits_ref[$canon]}" | sort) <(printf '%s\n' "$work" | sort) | sed 's/^\t/作業ツリーのみ: /; t; s/^/origin のみ: /' | sed '/^[^:]*: $/d')"
-  checkouts[$canon]+="${name}|${branch}|${diff_only//$'\n'/;}"$'\n'
+  # BSD sed は \t を解釈しないので awk で付け替える（comm -3 は2列目＝作業ツリーのみを先頭タブで示す）
+  diff_only="$(comm -3 <(printf '%s\n' "${hits_ref[$idx]}" | sort) <(printf '%s\n' "$work" | sort) | awk '/^\t/ { sub(/^\t/, ""); print "作業ツリーのみ: " $0; next } { print "origin のみ: " $0 }' | sed '/^[^:]*: $/d')"
+  checkouts[$idx]="${checkouts[$idx]}${name}|${branch}|${diff_only//$'\n'/;}"$'\n'
 done
 
 live=0
 docs_only=0
 unresolved=0
-for canon in "${order[@]}"; do
-  ref="${refname[$canon]}"
-  files="${hits_ref[$canon]}"
+i=0
+for canon in ${order[@]+"${order[@]}"}; do
+  ref="${refname[$i]}"
+  files="${hits_ref[$i]}"
   route="" doc=""
   while IFS= read -r f; do
     [ -z "$f" ] && continue
@@ -120,7 +144,7 @@ for canon in "${order[@]}"; do
   while IFS='|' read -r cname cbranch cdiff; do
     [ -z "$cname" ] && continue
     [ -n "$cdiff" ] && diffs+="   作業ツリーとの差 ($cname @ $cbranch): ${cdiff}"$'\n'
-  done <<<"${checkouts[$canon]}"
+  done <<<"${checkouts[$i]}"
 
   if [ -n "$route" ]; then
     live=$((live + 1))
@@ -137,6 +161,7 @@ for canon in "${order[@]}"; do
     echo "== $canon [未確認: origin の既定ブランチを確定できない、または検索に失敗して調べられない]"
   fi
   [ -n "$diffs" ] && printf '%s' "$diffs"
+  i=$((i + 1))
 done
 echo "対象リポジトリ（正規化後）: ${#order[@]}"
 echo "資料のみ（稼働送信元としない）: ${docs_only}"
