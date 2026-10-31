@@ -28,6 +28,11 @@ class InventoryBash32CompatTest(unittest.TestCase):
             (r"\$\{[A-Za-z_]+(\^\^|,,)\}", "大文字小文字変換"),
             (r"\|&", "|&"),
             (r"\bdeclare\s+-n\b", "nameref"),
+            (r"\$\{[A-Za-z_]+,,?\}", "小文字変換"),
+            (r"\$\{![A-Za-z_]+\[", "配列の添字展開 ${!arr[@]}"),
+            (r"&>>|\bcoproc\b|\bdeclare\s+-g\b", "Bash 4 以降の構文"),
+            # set -u で空配列を裸で展開すると Bash 3.2 は unbound variable で落ちる。${a[@]+"${a[@]}"} の形にする
+            (r"(?<!\+)\"\$\{(order|refname|hits_ref|checkouts)\[@\]\}\"", "空配列の裸の展開"),
         ]
         for n, line in _code_lines():
             for pat, label in banned:
@@ -41,7 +46,7 @@ class InventoryBash32CompatTest(unittest.TestCase):
                 self.assertIsNone(re.search(r"\bt;", line), f"BSD sed は `t;` のラベルを誤読する (L{n})")
 
     def test_empty_root_runs_under_set_u(self):
-        # 空の配列を "${arr[@]}" で展開しても落ちない（Bash 3.2 / 4.3 以前は unbound variable）
+        # 実行側の bash は新しいので 3.2 の落ち方は再現できない。裸の展開は上の静的検査で防ぎ、ここは空でも完走する回帰の目安
         with tempfile.TemporaryDirectory() as root:
             r = subprocess.run(["bash", SCRIPT, root], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
