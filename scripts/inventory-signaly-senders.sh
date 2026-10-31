@@ -49,7 +49,11 @@ for dir in "$root"/*/; do
   case "$name" in *-worktrees) continue ;; esac
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || continue
   url="$(git -C "$dir" remote get-url origin 2>/dev/null || true)"
-  canon="$(printf '%s' "$url" | sed -E 's#^(git@github\.com:|https?://([^@/]+@)?github\.com/)##; s#\.git$##')"
+  # 表示用の名前に資格情報を残さない。先に scheme・userinfo（最後の @ まで。パスワードに未エンコードの # ? / があっても
+  # 残さない）・クエリ・フラグメントを落としてから GitHub を owner/repo に正規化する。GitHub 以外のホストも
+  # userinfo を除いた host/path で表示する（URL 全体を出すと埋め込みトークンが漏れる）。
+  safe="$(printf '%s' "$url" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s#^.*@##; s#[?\#].*$##; s#^([^/:]+):([^0-9])#\1/\2#; s#\.git/?$##; s#/+$##')"
+  canon="$(printf '%s' "$safe" | sed -E 's#^github\.com/##')"
   [ -z "$canon" ] && canon="(origin なし)/$name"
   # Signaly 自身（別名 checkout を含む）は対象外
   [ "$canon" = "guchi-apps/signaly" ] && continue
