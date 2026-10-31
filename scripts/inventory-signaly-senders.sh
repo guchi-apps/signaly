@@ -65,20 +65,25 @@ for dir in "$root"/*/; do
     order+=("$canon")
     [ "$fetch" = 1 ] && git -C "$dir" fetch --quiet origin 2>/dev/null || true
     head_ref="$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    # origin/HEAD が参照先の無い壊れた参照（set-head・ブランチ削除・prune の後）のときは使わず、未確定として扱う
+    if [ -n "$head_ref" ] && ! git -C "$dir" rev-parse --verify --quiet "$head_ref^{commit}" >/dev/null 2>&1; then
+      head_ref=""
+    fi
     if [ -z "$head_ref" ]; then
       for b in develop main master trunk; do
         git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null && { head_ref="origin/$b"; break; }
       done
     fi
-    if [ -z "$head_ref" ]; then
-      # 上記の名前でも決まらないときは、origin の追跡ブランチがちょうど1本ならそれを既定とみなす
-      # （2本以上は既定を推測できないので未確認のまま）。
-      mapfile -t only_refs < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -vx 'origin/HEAD' | grep -vx 'origin' || true)
-      [ "${#only_refs[@]}" = 1 ] && head_ref="${only_refs[0]}"
-    fi
     refname[$canon]="$head_ref"
     if [ -n "$head_ref" ]; then
-      hits_ref[$canon]="$(git -C "$dir" grep -IlE "$pattern" "$head_ref" 2>/dev/null | sed "s#^${head_ref}:##" || true)"
+      # git grep の終了コード 1 はヒット無し。それ以外（2 以上）は検索自体の失敗なので 0 件に混ぜず未確認にする
+      grep_out="$(git -C "$dir" grep -IlE "$pattern" "$head_ref" 2>/dev/null)" && grep_rc=0 || grep_rc=$?
+      if [ "$grep_rc" -gt 1 ]; then
+        refname[$canon]=""
+        hits_ref[$canon]=""
+      else
+        hits_ref[$canon]="$(printf '%s' "$grep_out" | sed "s#^${head_ref}:##")"
+      fi
     else
       hits_ref[$canon]=""
     fi
