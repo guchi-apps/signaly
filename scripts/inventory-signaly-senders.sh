@@ -17,7 +17,9 @@
 # （git fetch を実行するので読み取り専用ではなくなる）。
 #
 # 使い方: bash scripts/inventory-signaly-senders.sh [--fetch] [~/apps]
-# 経路を持つリポジトリが 0 になったら、コード上の送信元は残っていない。
+# 「送信元が残っているリポジトリ」と「未確認のリポジトリ」がどちらも 0 になったら、コード上の送信元は
+# 残っていない。未確認は origin の既定ブランチを確定できず調べていないもの（0 に混ぜない。
+# `git fetch origin` や `git remote set-head origin -a` で既定を確定してから再実行する）。
 # 1Password・GitHub secrets・VPS/サブPCの .env・~/.pm2/dump.pm2 と Discord への実到達は
 # 別途確認する（docs/decommission.md）。
 set -euo pipefail
@@ -63,14 +65,25 @@ for dir in "$root"/*/; do
     order+=("$canon")
     [ "$fetch" = 1 ] && git -C "$dir" fetch --quiet origin 2>/dev/null || true
     head_ref="$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+    # origin/HEAD が参照先の無い壊れた参照（set-head・ブランチ削除・prune の後）のときは使わず、未確定として扱う
+    if [ -n "$head_ref" ] && ! git -C "$dir" rev-parse --verify --quiet "$head_ref^{commit}" >/dev/null 2>&1; then
+      head_ref=""
+    fi
     if [ -z "$head_ref" ]; then
-      for b in develop main; do
+      for b in develop main master trunk; do
         git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null && { head_ref="origin/$b"; break; }
       done
     fi
     refname[$canon]="$head_ref"
     if [ -n "$head_ref" ]; then
-      hits_ref[$canon]="$(git -C "$dir" grep -IlE "$pattern" "$head_ref" 2>/dev/null | sed "s#^${head_ref}:##" || true)"
+      # git grep の終了コード 1 はヒット無し。それ以外（2 以上）は検索自体の失敗なので 0 件に混ぜず未確認にする
+      grep_out="$(git -C "$dir" grep -IlE "$pattern" "$head_ref" 2>/dev/null)" && grep_rc=0 || grep_rc=$?
+      if [ "$grep_rc" -gt 1 ]; then
+        refname[$canon]=""
+        hits_ref[$canon]=""
+      else
+        hits_ref[$canon]="$(printf '%s' "$grep_out" | sed "s#^${head_ref}:##")"
+      fi
     else
       hits_ref[$canon]=""
     fi
@@ -85,6 +98,7 @@ done
 
 live=0
 docs_only=0
+unresolved=0
 for canon in "${order[@]}"; do
   ref="${refname[$canon]}"
   files="${hits_ref[$canon]}"
@@ -111,10 +125,18 @@ for canon in "${order[@]}"; do
     echo "== $canon [資料のみ] $ref"
     printf '%s' "$doc"
   elif [ -z "$ref" ]; then
-    echo "== $canon [要確認: origin の既定ブランチが無く調べられない]"
+    # 既定ブランチを確定できないリポジトリは「0件」に混ぜない。未確認として数え、停止ゲートに含める。
+    unresolved=$((unresolved + 1))
+    echo "== $canon [未確認: origin の既定ブランチを確定できず調べられない]"
   fi
   [ -n "$diffs" ] && printf '%s' "$diffs"
 done
 echo "対象リポジトリ（正規化後）: ${#order[@]}"
 echo "資料のみ（稼働送信元としない）: ${docs_only}"
 echo "送信元が残っているリポジトリ: ${live}"
+echo "未確認のリポジトリ（既定ブランチ不明）: ${unresolved}"
+if [ "$live" = 0 ] && [ "$unresolved" = 0 ]; then
+  echo "判定: コード上の送信元は残っていない"
+else
+  echo "判定: 停止ゲート未達（送信元 ${live} 件・未確認 ${unresolved} 件）"
+fi

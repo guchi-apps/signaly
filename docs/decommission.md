@@ -22,7 +22,9 @@
 
 ## 停止前のゲート（すべて満たすまで次へ進まない）
 
-1. 上記スクリプトの「送信元が残っているリポジトリ」が 0（経路・再生成が1件も無い）。
+1. 上記スクリプトの「送信元が残っているリポジトリ」**と「未確認のリポジトリ」の両方**が 0
+   （経路・再生成が1件も無く、既定ブランチを確定できず調べられなかったリポジトリも無い。
+   未確認は `git fetch origin` や `git remote set-head origin -a` で既定を確定して再実行する）。
 2. 以下の 5 箇所に旧 Signaly の Webhook URL / API キーが無い（チャンネル ID で突き合わせる。
    `docs/webhook.md` の棚卸し手順）:
    1Password / organization secret / repository secret / VPS・サブPCの `.env` / `~/.pm2/dump.pm2`。
