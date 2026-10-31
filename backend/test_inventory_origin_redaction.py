@@ -36,6 +36,16 @@ class InventoryOriginRedactionTest(unittest.TestCase):
         out = self._run("https://gitlab.example/group/repo.git?token=SECRETTOKEN")
         self.assertNotIn("SECRETTOKEN", out)
 
+    def test_unencoded_delimiters_in_password(self):
+        for o in ("https://user:pa#SECRETX@gitlab.example/g/r.git",
+                  "https://user:pa?SECRETX@gitlab.example/g/r.git",
+                  "https://user:pa/SECRETX@gitlab.example/g/r.git",
+                  "ssh://user:SECRETX@host.example:2222/g/r.git",
+                  "user:SECRETX@host.example:g/r.git"):
+            out = self._run(o)
+            self.assertNotIn("SECRETX", out, o)
+            self.assertNotIn("user", out.replace("対象", ""), o)
+
     def test_github_still_normalized(self):
         out = self._run("https://SECRETTOKEN@github.com/owner/repo.git")
         self.assertNotIn("SECRETTOKEN", out)
