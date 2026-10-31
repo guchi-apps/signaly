@@ -17,7 +17,9 @@
 # （git fetch を実行するので読み取り専用ではなくなる）。
 #
 # 使い方: bash scripts/inventory-signaly-senders.sh [--fetch] [~/apps]
-# 経路を持つリポジトリが 0 になったら、コード上の送信元は残っていない。
+# 「送信元が残っているリポジトリ」と「未確認のリポジトリ」がどちらも 0 になったら、コード上の送信元は
+# 残っていない。未確認は origin の既定ブランチを確定できず調べていないもの（0 に混ぜない。
+# `git fetch origin` や `git remote set-head origin -a` で既定を確定してから再実行する）。
 # 1Password・GitHub secrets・VPS/サブPCの .env・~/.pm2/dump.pm2 と Discord への実到達は
 # 別途確認する（docs/decommission.md）。
 set -euo pipefail
@@ -64,9 +66,15 @@ for dir in "$root"/*/; do
     [ "$fetch" = 1 ] && git -C "$dir" fetch --quiet origin 2>/dev/null || true
     head_ref="$(git -C "$dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
     if [ -z "$head_ref" ]; then
-      for b in develop main; do
+      for b in develop main master trunk; do
         git -C "$dir" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null && { head_ref="origin/$b"; break; }
       done
+    fi
+    if [ -z "$head_ref" ]; then
+      # 上記の名前でも決まらないときは、origin の追跡ブランチがちょうど1本ならそれを既定とみなす
+      # （2本以上は既定を推測できないので未確認のまま）。
+      mapfile -t only_refs < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/remotes/origin 2>/dev/null | grep -vx 'origin/HEAD' | grep -vx 'origin' || true)
+      [ "${#only_refs[@]}" = 1 ] && head_ref="${only_refs[0]}"
     fi
     refname[$canon]="$head_ref"
     if [ -n "$head_ref" ]; then
@@ -85,6 +93,7 @@ done
 
 live=0
 docs_only=0
+unresolved=0
 for canon in "${order[@]}"; do
   ref="${refname[$canon]}"
   files="${hits_ref[$canon]}"
@@ -111,10 +120,18 @@ for canon in "${order[@]}"; do
     echo "== $canon [資料のみ] $ref"
     printf '%s' "$doc"
   elif [ -z "$ref" ]; then
-    echo "== $canon [要確認: origin の既定ブランチが無く調べられない]"
+    # 既定ブランチを確定できないリポジトリは「0件」に混ぜない。未確認として数え、停止ゲートに含める。
+    unresolved=$((unresolved + 1))
+    echo "== $canon [未確認: origin の既定ブランチを確定できず調べられない]"
   fi
   [ -n "$diffs" ] && printf '%s' "$diffs"
 done
 echo "対象リポジトリ（正規化後）: ${#order[@]}"
 echo "資料のみ（稼働送信元としない）: ${docs_only}"
 echo "送信元が残っているリポジトリ: ${live}"
+echo "未確認のリポジトリ（既定ブランチ不明）: ${unresolved}"
+if [ "$live" = 0 ] && [ "$unresolved" = 0 ]; then
+  echo "判定: コード上の送信元は残っていない"
+else
+  echo "判定: 停止ゲート未達（送信元 ${live} 件・未確認 ${unresolved} 件）"
+fi

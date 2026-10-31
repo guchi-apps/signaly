@@ -52,5 +52,50 @@ class InventoryOriginRedactionTest(unittest.TestCase):
         self.assertIn("== owner/repo ", out)
 
 
+class InventoryUnresolvedDefaultBranchTest(unittest.TestCase):
+    """origin/HEAD が無い checkout を 0 件判定へ混ぜない（#368）。"""
+
+    def _run(self, branches, with_route=True):
+        with tempfile.TemporaryDirectory() as root:
+            repo = os.path.join(root, "app")
+            os.mkdir(repo)
+            _git("init", "-q", cwd=repo)
+            _git("remote", "add", "origin", "https://github.com/owner/repo.git", cwd=repo)
+            with open(os.path.join(repo, "notify.sh"), "w") as f:
+                f.write("signaly-notify\n" if with_route else "echo hi\n")
+            _git("add", ".", cwd=repo)
+            _git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "x", cwd=repo)
+            for b in branches:
+                _git("update-ref", f"refs/remotes/origin/{b}", "HEAD", cwd=repo)
+            r = subprocess.run(["bash", SCRIPT, root], capture_output=True, text=True, check=True)
+            return r.stdout
+
+    def test_master_only_is_inspected(self):
+        out = self._run(["master"])
+        self.assertIn("送信元が残っているリポジトリ: 1", out)
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 0", out)
+
+    def test_single_unknown_branch_is_inspected(self):
+        out = self._run(["release"])
+        self.assertIn("送信元が残っているリポジトリ: 1", out)
+
+    def test_ambiguous_branches_are_unresolved_not_zero(self):
+        out = self._run(["alpha", "beta"])
+        self.assertIn("送信元が残っているリポジトリ: 0", out)
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 1", out)
+        self.assertIn("停止ゲート未達", out)
+        self.assertNotIn("コード上の送信元は残っていない", out)
+
+    def test_no_remote_branches_is_unresolved(self):
+        out = self._run([])
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 1", out)
+        self.assertIn("停止ゲート未達", out)
+
+    def test_clean_resolved_repo_passes_gate(self):
+        out = self._run(["main"], with_route=False)
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 0", out)
+        self.assertIn("コード上の送信元は残っていない", out)
+
+
 if __name__ == "__main__":
     unittest.main()
