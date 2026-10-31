@@ -12,12 +12,21 @@
 
 `bash scripts/inventory-signaly-senders.sh` を実行すると、`~/apps` 配下で Signaly への
 送信経路（`SIGNALY_*` / `signaly-notify` / `notifySignaly` / `/webhook/<ID>`）が残る
-リポジトリを数えられる（値は出力しない）。この日の結果は **23 リポジトリが残存**。
+リポジトリを数えられる（値は出力しない）。数える単位は GitHub の owner/repo で、同じ origin の
+別 checkout は1つにまとめる。調べるのは origin の既定ブランチ（最新の配布・実行ブランチ）で、
+ローカル作業ツリーとの差は別行に出る（古い疑いがあれば `--fetch`）。ヒットしたファイルは
+**経路**（workflow・スクリプト・ソース）／**再生成**（テンプレート・生成器）／**資料**（`*.md`・
+`docs/`・サンプル・テスト）に分け、資料だけのリポジトリは「稼働送信元あり」にしない。
+2026-10-26 の旧版の「23 リポジトリ」は、ローカルディレクトリのヒット数で、稼働送信元の数ではない。
+スクリプトは macOS 標準の Bash 3.2 でも動く（連想配列・`mapfile`・BSD `sed` で効かない構文を使わない。
+追加の Bash を入れなくてよい想定。#372）。macOS 実機での実行確認は PR で別途記録する。
 各リポジトリの異常通知への切り替えは、個別アプリの Issue で行う（本Issueでは実装しない）。
 
 ## 停止前のゲート（すべて満たすまで次へ進まない）
 
-1. 上記スクリプトの出力が空（残存リポジトリ 0）。
+1. 上記スクリプトの「送信元が残っているリポジトリ」**と「未確認のリポジトリ」の両方**が 0
+   （経路・再生成が1件も無く、既定ブランチを確定できず調べられなかったリポジトリも無い。
+   未確認は `git fetch origin` や `git remote set-head origin -a` で既定を確定して再実行する）。
 2. 以下の 5 箇所に旧 Signaly の Webhook URL / API キーが無い（チャンネル ID で突き合わせる。
    `docs/webhook.md` の棚卸し手順）:
    1Password / organization secret / repository secret / VPS・サブPCの `.env` / `~/.pm2/dump.pm2`。
