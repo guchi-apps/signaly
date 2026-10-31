@@ -82,6 +82,17 @@ class InventoryUnresolvedDefaultBranchTest(unittest.TestCase):
         self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 1", out)
         self.assertIn("停止ゲート未達", out)
 
+    def test_stale_develop_and_main_are_unresolved(self):
+        # 実際の既定が main で古い develop も残る構成。develop だけを見て 0 件にしない（#368 世代2）
+        out = self._run(["develop", "main"])
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 1", out)
+        self.assertIn("停止ゲート未達", out)
+        self.assertNotIn("コード上の送信元は残っていない", out)
+
+    def test_dangling_head_with_two_known_branches_is_unresolved(self):
+        out = self._run(["develop", "main"], head_target="origin/gone")
+        self.assertIn("未確認のリポジトリ（既定ブランチ不明）: 1", out)
+
     def test_trunk_is_inspected(self):
         out = self._run(["trunk"])
         self.assertIn("送信元が残っているリポジトリ: 1", out)
